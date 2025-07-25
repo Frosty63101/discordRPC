@@ -34,7 +34,7 @@ jobs:
         run: pyinstaller backend/app.spec
       
       - name: Clean PyInstaller build folder
-        run: rmdir /s /q backend\build
+        run: if exist backend\build rmdir /s /q backend\build
 
       - name: Install Node dependencies
         run: |
