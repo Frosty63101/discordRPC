@@ -52,11 +52,14 @@ jobs:
           echo Cleaned PyInstaller build.
           tree /F
 
-      - name: Install Node dependencies and build React
+      - name: Install Node dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build React frontend
+        working-directory: frontend
         run: |
-          cd frontend
-          npm install
-          npm run build || (echo "⚠️ React build failed" && exit 1)
+          call npm run build --verbose
           if exist build (
             echo CCC Build folder found in frontend!
             dir build
@@ -65,8 +68,21 @@ jobs:
             dir
             exit 1
           )
-          cd ..
-          tree /F
+
+      - name: Debug React build output
+        run: |
+          if exist frontend\build (
+            echo CCC frontend\build exists
+            dir frontend\build
+            if exist frontend\build\index.html (
+              echo CCC index.html found!
+              type frontend\build\index.html
+            ) else (
+              echo XXX index.html missing!
+            )
+          ) else (
+            echo XXX frontend\build does not exist!
+          )
 
       - name: Show npm scripts and working directory
         run: |
