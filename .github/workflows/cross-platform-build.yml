@@ -56,10 +56,22 @@ jobs:
         run: |
           cd frontend
           npm install
-          npm run build
+          npm run build || (echo "⚠️ React build failed" && exit 1)
+          if exist build (
+            echo CCC Build folder found in frontend!
+            dir build
+          ) else (
+            echo XXX React 'build' directory missing inside frontend!
+            dir
+            exit 1
+          )
           cd ..
-          echo React built.
           tree /F
+
+      - name: Show npm scripts and working directory
+        run: |
+          echo Current path: %cd%
+          type frontend\package.json
 
       - name: Copy React build to Electron location
         run: |
