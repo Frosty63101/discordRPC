@@ -30,4 +30,6 @@ coll = COLLECT(exe,
                a.datas,
                strip=False,
                upx=True,
+               distpath='resources/app/build',
+               workpath='backend/build',
                name='app')
