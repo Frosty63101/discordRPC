@@ -31,7 +31,7 @@ jobs:
         run: pip install pyinstaller flask flask-cors
 
       - name: Build Python binary
-        run: pyinstaller backend/app.spec
+        run: pyinstaller backend/app.spec --onefile
       
       - name: Clean PyInstaller build folder
         run: if exist backend\build rmdir /s /q backend\build
@@ -85,7 +85,7 @@ jobs:
         run: pip install pyinstaller flask flask-cors
 
       - name: Build Python binary
-        run: pyinstaller backend/app-mac.spec
+        run: pyinstaller backend/app-mac.spec --onefile
       
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
@@ -137,7 +137,7 @@ jobs:
           pip3 install pyinstaller flask flask-cors
 
       - name: Build Python binary
-        run: pyinstaller backend/app-linux.spec
+        run: pyinstaller backend/app-linux.spec --onefile
       
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
