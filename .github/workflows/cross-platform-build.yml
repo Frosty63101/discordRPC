@@ -28,35 +28,58 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pyinstaller flask flask-cors
+        run: |
+          pip install pyinstaller flask flask-cors
+          echo Python dependencies installed.
+          tree /F
 
       - name: Build Python binary
-        run: pyinstaller backend/app.spec
-      
+        run: |
+          pyinstaller backend/app.spec
+          echo Flask binary built.
+          tree /F
+
       - name: Copy Flask binary to Electron location
         run: |
           if not exist build\app mkdir build\app
           xcopy /s /e /y dist\* build\app\
+          echo Flask binary copied.
+          tree /F
 
       - name: Clean PyInstaller build folder
-        run: if exist backend\build rmdir /s /q backend\build
+        run: |
+          if exist backend\build rmdir /s /q backend\build
+          echo Cleaned PyInstaller build.
+          tree /F
 
-      - name: Install Node dependencies
+      - name: Install Node dependencies and build React
         run: |
           npm install
           npm run build
-      
+          echo Node modules installed and React built.
+          tree /F
+
       - name: Copy React build to Electron location
         run: |
-          mkdir resources\app\frontend\build
-          xcopy /s /e /y frontend\build\* resources\app\frontend\build\
+          if exist frontend\build (
+            if not exist resources\app\frontend\build mkdir resources\app\frontend\build
+            xcopy /s /e /y frontend\build\* resources\app\frontend\build\
+          ) else (
+            echo React build directory not found!
+            exit 1
+          )
+          echo React build copied.
+          tree /F
 
       - name: Package Electron App
-        run: npx electron-packager . DiscordRPC \
-          --platform=win32 --arch=x64 --out=dist --overwrite \
-          --ignore="^/node_modules" \
-          --ignore="^/frontend/node_modules" \
-          --prune=true
+        run: |
+          npx electron-packager . DiscordRPC ^
+            --platform=win32 --arch=x64 --out=dist --overwrite ^
+            --ignore="^/node_modules" ^
+            --ignore="^/frontend/node_modules" ^
+            --prune=true
+          echo Electron app packaged.
+          tree /F
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
