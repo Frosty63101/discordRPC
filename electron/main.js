@@ -63,7 +63,7 @@ function createWindow() {
         webPreferences: { nodeIntegration: false }
     });
 
-    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
+    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'index.html'));
 
     mainWindow.once('ready-to-show', () => {
         if (splash) splash.close();
@@ -110,4 +110,8 @@ app.on('will-quit', shutdown);
 app.on('window-all-closed', () => {
     shutdown();
     if (process.platform !== 'darwin') app.quit();
+    if (flaskProcess) {
+        flaskProcess.kill();
+        flaskProcess = null;
+    }
 });
