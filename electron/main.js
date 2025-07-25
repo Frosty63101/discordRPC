@@ -22,11 +22,19 @@ function getFlaskBinary() {
     }
 }
 
+const flaskStartupTimeout = setTimeout(() => {
+    console.error("Flask startup timed out");
+    splash.loadURL('data:text/html,<h1>Backend timed out</h1>');
+    setTimeout(() => app.quit(), 5000);
+}, 10000); // 10s
+
 function waitForFlask(retries = 50) {
     return new Promise((resolve, reject) => {
         const interval = setInterval(() => {
+            console.log(`Waiting for Flask... (${retries} retries left)`);
             http.get('http://localhost:5000/api/hello', res => {
                 if (res.statusCode === 200) {
+                    console.log("Flask responded successfully");
                     clearInterval(interval);
                     resolve();
                 }
@@ -40,6 +48,7 @@ function waitForFlask(retries = 50) {
     });
 }
 
+
 function createWindow() {
     // Splash screen
     splash = new BrowserWindow({
@@ -51,7 +60,7 @@ function createWindow() {
         resizable: false,
         show: false
     });
-
+    
     splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
     splash.once('ready-to-show', () => splash.show());
 
@@ -63,7 +72,7 @@ function createWindow() {
         webPreferences: { nodeIntegration: false }
     });
 
-    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'index.html'));
+    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
 
     mainWindow.once('ready-to-show', () => {
         if (splash) splash.close();
@@ -92,10 +101,15 @@ app.whenReady().then(() => {
     });
 
     waitForFlask()
-        .then(() => createWindow())
+        .then(() => {
+            clearTimeout(flaskStartupTimeout);
+            createWindow();
+        })
         .catch(err => {
+            clearTimeout(flaskStartupTimeout);
             console.error("Flask never came online:", err);
-            app.quit();
+            splash.loadURL('data:text/html,<h1>Backend failed to start</h1><p>' + err.message + '</p>');
+            setTimeout(() => app.quit(), 5000);
         });
 });
 

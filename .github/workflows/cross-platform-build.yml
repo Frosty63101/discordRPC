@@ -46,10 +46,10 @@ jobs:
           npm install
           npm run build
       
-      - name: Copy splash screen to Electron location
+      - name: Copy React build to Electron location
         run: |
-          mkdir resources\app\frontend\public
-          xcopy /s /e /y frontend\public\* resources\app\frontend\public\
+          mkdir resources\app\frontend\build
+          xcopy /s /e /y frontend\build\* resources\app\frontend\build\
 
       - name: Package Electron App
         run: npx electron-packager . DiscordRPC \
@@ -105,10 +105,10 @@ jobs:
           npm install
           npm run build
       
-      - name: Copy splash screen to Electron location
+      - name: Copy React build to Electron location
         run: |
-          mkdir -p resources/app/frontend/public
-          cp -r frontend/public/* resources/app/frontend/public/
+          mkdir -p resources/app/frontend/build
+          cp -r frontend/build/* resources/app/frontend/build/
 
       - name: Package Electron App
         run: npx electron-packager . DiscordRPC \
@@ -162,10 +162,10 @@ jobs:
           npm install
           npm run build
       
-      - name: Copy splash screen to Electron location
+      - name: Copy React build to Electron location
         run: |
-          mkdir -p resources/app/frontend/public
-          cp -r frontend/public/* resources/app/frontend/public/
+          mkdir -p resources/app/frontend/build
+          cp -r frontend/build/* resources/app/frontend/build/
 
       - name: Package Electron App
         run: npx electron-packager . DiscordRPC \
