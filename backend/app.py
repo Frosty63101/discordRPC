@@ -1,5 +1,7 @@
 from flask import Flask, jsonify, request
 import threading
+import signal
+import os
 
 app = Flask(__name__)
 
@@ -9,11 +11,22 @@ def hello():
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
-    shutdownFunc = request.environ.get('werkzeug.server.shutdown')
-    if shutdownFunc is None:
-        return jsonify({"error": "Not running with the Werkzeug Server"}), 500
-    shutdownFunc()
-    return jsonify({"message": "Shutting down Flask..."})
+    pid = os.getpid()
+    threading.Thread(target=lambda: os.kill(pid, signal.SIGTERM)).start()
+    return jsonify({"message": "Flask shutting down..."})
+
+@app.route("/status", methods=["GET"])
+def status():
+    return jsonify({"status": "Flask is running!"})
+
+@app.route("/api/thread", methods=["POST"])
+def thread():
+    thread_id = threading.get_ident()
+    return jsonify({"thread_id": thread_id})
+
+@app.route("/api/pid", methods=["GET"])
+def pid():
+    return jsonify({"pid": os.getpid()})
 
 def run():
     app.run(host="localhost", port=5000)
