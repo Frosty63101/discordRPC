@@ -12,7 +12,7 @@ function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
     switch (process.platform) {
         case 'win32':
-            return path.join(base, 'app', 'app.exe');
+            return path.join(base, 'app', 'app', 'app.exe');
         case 'darwin':
             return path.join(base, 'app-mac', 'app_mac_bin'); // match PyInstaller output
         case 'linux':
