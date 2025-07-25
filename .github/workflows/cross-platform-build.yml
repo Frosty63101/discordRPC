@@ -34,7 +34,9 @@ jobs:
         run: pyinstaller backend/app.spec
       
       - name: Copy Flask binary to Electron location
-        run: copy dist\app.exe resources\app\build\app\app.exe
+        run: |
+          if not exist resources\app\build\app mkdir resources\app\build\app
+          copy dist\app.exe resources\app\build\app\app.exe
 
       - name: Clean PyInstaller build folder
         run: if exist backend\build rmdir /s /q backend\build
@@ -91,7 +93,9 @@ jobs:
         run: pyinstaller backend/app-mac.spec
 
       - name: Copy Flask binary to Electron location
-        run: cp dist/app-mac resources/app/build/app-mac/app-mac
+        run: |
+          mkdir -p resources/app/build/app-mac
+          cp -R dist/app_mac_bin/* resources/app/build/app-mac/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
@@ -146,7 +150,9 @@ jobs:
         run: pyinstaller backend/app-linux.spec
       
       - name: Copy Flask binary to Electron location
-        run: cp dist/app-linux resources/app/build/app-linux/app-linux
+        run: |
+          mkdir -p resources/app/build/app-linux
+          cp -R dist/app_linux_bin/* resources/app/build/app-linux/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
