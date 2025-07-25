@@ -3,7 +3,7 @@ block_cipher = None
 
 a = Analysis(['app.py'],
              pathex=['backend'],
-             binaries=[],
+             binaries=[(dll, '.') for dll in pythonDlls],
              datas=[],
              hiddenimports=[],
              hookspath=[],
