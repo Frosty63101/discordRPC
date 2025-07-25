@@ -71,7 +71,7 @@ app.whenReady().then(() => {
     const flaskPath = getFlaskBinary();
 
     if (!fs.existsSync(flaskPath)) {
-        console.error("❌ Flask binary not found at:", flaskPath);
+        console.error("Flask binary not found at:", flaskPath);
         app.quit();
         return;
     }
@@ -83,14 +83,14 @@ app.whenReady().then(() => {
     });
 
     flaskProcess.on('error', err => {
-        console.error("❌ Failed to start Flask process:", err);
+        console.error("Failed to start Flask process:", err);
         app.quit();
     });
 
     waitForFlask()
         .then(() => createWindow())
         .catch(err => {
-            console.error("❌ Flask never came online:", err);
+            console.error("Flask never came online:", err);
             app.quit();
         });
 });
