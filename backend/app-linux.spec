@@ -1,5 +1,13 @@
 # backend/app.spec
+import sys
+import os
+import glob
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
+
+# 👇 Define pythonDlls properly before using it
+pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
 
 a = Analysis(['app.py'],
              pathex=['backend'],
