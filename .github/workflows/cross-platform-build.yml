@@ -1,0 +1,136 @@
+name: Build and Package Electron + Flask App
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [created]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Windows Build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller flask flask-cors
+
+      - name: Build Python binary
+        run: pyinstaller backend/app.spec
+
+      - name: Install Node dependencies
+        run: |
+          npm install
+          npm run build
+
+      - name: Package Electron App
+        run: npx electron-packager . DiscordRPC --platform=win32 --arch=x64 --out=dist --overwrite
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/DiscordRPC-win32-x64/
+
+      - name: Upload Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/DiscordRPC-win32-x64/**/*
+
+  build-macos:
+    name: macOS Build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller flask flask-cors
+
+      - name: Build Python binary
+        run: pyinstaller backend/app-mac.spec
+
+      - name: Install Node dependencies
+        run: |
+          npm install
+          npm run build
+
+      - name: Package Electron App
+        run: npx electron-packager . DiscordRPC --platform=darwin --arch=x64 --out=dist --overwrite
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: dist/DiscordRPC-darwin-x64/
+
+      - name: Upload Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/DiscordRPC-darwin-x64/**/*
+
+  build-linux:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install system deps
+        run: sudo apt update && sudo apt install -y python3-pyinstaller python3-pip
+
+      - name: Install Python dependencies
+        run: pip3 install flask flask-cors
+
+      - name: Build Python binary
+        run: pyinstaller backend/app-linux.spec
+
+      - name: Install Node dependencies
+        run: |
+          npm install
+          npm run build
+
+      - name: Package Electron App
+        run: npx electron-packager . DiscordRPC --platform=linux --arch=x64 --out=dist --overwrite
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/DiscordRPC-linux-x64/
+
+      - name: Upload Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/DiscordRPC-linux-x64/**/*
