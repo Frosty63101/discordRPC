@@ -115,8 +115,23 @@ app.whenReady().then(() => {
 
 function shutdown() {
     if (flaskProcess) {
-        flaskProcess.kill();
-        flaskProcess = null;
+        const req = http.request({
+            hostname: 'localhost',
+            port: 5000,
+            path: '/shutdown',
+            method: 'POST'
+        }, res => {
+            console.log(`Flask shutdown response: ${res.statusCode}`);
+            flaskProcess = null;
+        });
+
+        req.on('error', (err) => {
+            console.error("Error shutting down Flask:", err);
+            flaskProcess.kill();
+            flaskProcess = null;
+        });
+
+        req.end();
     }
 }
 
