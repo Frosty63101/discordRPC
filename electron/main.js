@@ -9,7 +9,7 @@ let splash;
 let mainWindow;
 
 function getFlaskBinary() {
-    const base = path.join(__dirname, 'build');
+    const base = path.join(__dirname, '..', 'build');
     switch (process.platform) {
         case 'win32': return path.join(base, 'app', 'app.exe');
         case 'darwin': return path.join(base, 'app-mac', 'app-mac');
