@@ -35,8 +35,8 @@ jobs:
       
       - name: Copy Flask binary to Electron location
         run: |
-          if not exist build\app mkdir build\app
-          copy dist\app.exe build\app\app.exe
+          if not exist resources\app\build\app mkdir resources\app\build\app
+          xcopy /s /e /y dist\* resources\app\build\app\
 
       - name: Clean PyInstaller build folder
         run: if exist backend\build rmdir /s /q backend\build
