@@ -54,9 +54,11 @@ jobs:
 
       - name: Install Node dependencies and build React
         run: |
+          cd frontend
           npm install
           npm run build
-          echo Node modules installed and React built.
+          cd ..
+          echo React built.
           tree /F
 
       - name: Copy React build to Electron location
