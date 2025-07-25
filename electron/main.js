@@ -52,7 +52,7 @@ function createWindow() {
         show: false
     });
 
-    splash.loadFile(path.join(__dirname, 'frontend', 'public', 'splash.html'));
+    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
     splash.once('ready-to-show', () => splash.show());
 
     // Main app window
@@ -63,7 +63,7 @@ function createWindow() {
         webPreferences: { nodeIntegration: false }
     });
 
-    mainWindow.loadFile(path.join(__dirname, 'frontend', 'build', 'index.html'));
+    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
 
     mainWindow.once('ready-to-show', () => {
         if (splash) splash.close();
