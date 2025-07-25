@@ -28,29 +28,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: |
-          pip install pyinstaller flask flask-cors
-          echo Python dependencies installed.
-          tree /F
+        run: pip install pyinstaller flask flask-cors
 
       - name: Build Python binary
-        run: |
-          pyinstaller backend/app.spec
-          echo Flask binary built.
-          tree /F
+        run: pyinstaller backend/app.spec
 
       - name: Copy Flask binary to Electron location
         run: |
           if not exist build\app mkdir build\app
           xcopy /s /e /y dist\* build\app\
-          echo Flask binary copied.
-          tree /F
 
       - name: Clean PyInstaller build folder
-        run: |
-          if exist backend\build rmdir /s /q backend\build
-          echo Cleaned PyInstaller build.
-          tree /F
+        run: if exist backend\build rmdir /s /q backend\build
 
       - name: Install Node dependencies
         working-directory: frontend
@@ -60,34 +49,6 @@ jobs:
         working-directory: frontend
         run: |
           call npm run build --verbose
-          if exist build (
-            echo CCC Build folder found in frontend!
-            dir build
-          ) else (
-            echo XXX React 'build' directory missing inside frontend!
-            dir
-            exit 1
-          )
-
-      - name: Debug React build output
-        run: |
-          if exist frontend\build (
-            echo CCC frontend\build exists
-            dir frontend\build
-            if exist frontend\build\index.html (
-              echo CCC index.html found!
-              type frontend\build\index.html
-            ) else (
-              echo XXX index.html missing!
-            )
-          ) else (
-            echo XXX frontend\build does not exist!
-          )
-
-      - name: Show npm scripts and working directory
-        run: |
-          echo Current path: %cd%
-          type frontend\package.json
 
       - name: Copy React build to Electron location
         run: |
@@ -98,8 +59,6 @@ jobs:
             echo React build directory not found!
             exit 1
           )
-          echo React build copied.
-          tree /F
 
       - name: Install Electron and Electron Packager
         run: npm install --save-dev electron @electron/packager
@@ -111,8 +70,6 @@ jobs:
             --ignore="^/node_modules" ^
             --ignore="^/frontend/node_modules" ^
             --prune=true
-          echo Electron app packaged.
-          tree /F
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -150,28 +107,35 @@ jobs:
 
       - name: Copy Flask binary to Electron location
         run: |
-          mkdir -p resources/app/build/app-mac
-          cp dist/app_mac_bin resources/app/build/app-mac/app_mac_bin
+          mkdir -p build/app
+          cp dist/app_mac_bin build/app/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
 
       - name: Install Node dependencies
-        run: |
-          npm install
-          npm run build
-      
+        working-directory: frontend
+        run: npm install
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: npm run build
+
       - name: Copy React build to Electron location
         run: |
           mkdir -p resources/app/frontend/build
           cp -r frontend/build/* resources/app/frontend/build/
 
+      - name: Install Electron and Electron Packager
+        run: npm install --save-dev electron @electron/packager
+
       - name: Package Electron App
-        run: npx electron-packager . DiscordRPC \
-          --platform=darwin --arch=x64 --out=dist --overwrite \
-          --ignore="^/node_modules" \
-          --ignore="^/frontend/node_modules" \
-          --prune=true
+        run: |
+          npx electron-packager . DiscordRPC \
+            --platform=darwin --arch=x64 --out=dist --overwrite \
+            --ignore="^/node_modules" \
+            --ignore="^/frontend/node_modules" \
+            --prune=true
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -204,31 +168,38 @@ jobs:
 
       - name: Build Python binary
         run: pyinstaller backend/app-linux.spec
-      
+
       - name: Copy Flask binary to Electron location
         run: |
-          mkdir -p resources/app/build/app-linux
-          cp dist/app_linux_bin resources/app/build/app-linux/app_linux_bin
+          mkdir -p build/app
+          cp dist/app_linux_bin build/app/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
 
       - name: Install Node dependencies
-        run: |
-          npm install
-          npm run build
-      
+        working-directory: frontend
+        run: npm install
+
+      - name: Build React frontend
+        working-directory: frontend
+        run: npm run build
+
       - name: Copy React build to Electron location
         run: |
           mkdir -p resources/app/frontend/build
           cp -r frontend/build/* resources/app/frontend/build/
 
+      - name: Install Electron and Electron Packager
+        run: npm install --save-dev electron @electron/packager
+
       - name: Package Electron App
-        run: npx electron-packager . DiscordRPC \
-          --platform=linux --arch=x64 --out=dist --overwrite \
-          --ignore="^/node_modules" \
-          --ignore="^/frontend/node_modules" \
-          --prune=true
+        run: |
+          npx electron-packager . DiscordRPC \
+            --platform=linux --arch=x64 --out=dist --overwrite \
+            --ignore="^/node_modules" \
+            --ignore="^/frontend/node_modules" \
+            --prune=true
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
