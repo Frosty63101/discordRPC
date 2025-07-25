@@ -101,9 +101,12 @@ jobs:
           echo React build copied.
           tree /F
 
+      - name: Install Electron and Electron Packager
+        run: npm install --save-dev electron @electron/packager
+
       - name: Package Electron App
         run: |
-          npx electron-packager . DiscordRPC ^
+          npx @electron/packager . DiscordRPC ^
             --platform=win32 --arch=x64 --out=dist --overwrite ^
             --ignore="^/node_modules" ^
             --ignore="^/frontend/node_modules" ^
