@@ -51,11 +51,6 @@ jobs:
           --platform=win32 --arch=x64 --out=dist --overwrite \
           --ignore="^/node_modules" \
           --ignore="^/frontend/node_modules" \
-          --ignore="^/\.git" \
-          --ignore="^/build_scripts" \
-          --ignore="^/\.github" \
-          --ignore="^/frontend/public" \
-          --ignore="^/.*\.spec" \
           --prune=true
 
       - name: Upload Artifact
@@ -110,11 +105,6 @@ jobs:
           --platform=darwin --arch=x64 --out=dist --overwrite \
           --ignore="^/node_modules" \
           --ignore="^/frontend/node_modules" \
-          --ignore="^/\.git" \
-          --ignore="^/build_scripts" \
-          --ignore="^/\.github" \
-          --ignore="^/frontend/public" \
-          --ignore="^/.*\.spec" \
           --prune=true
 
       - name: Upload Artifact
@@ -167,11 +157,6 @@ jobs:
           --platform=linux --arch=x64 --out=dist --overwrite \
           --ignore="^/node_modules" \
           --ignore="^/frontend/node_modules" \
-          --ignore="^/\.git" \
-          --ignore="^/build_scripts" \
-          --ignore="^/\.github" \
-          --ignore="^/frontend/public" \
-          --ignore="^/.*\.spec" \
           --prune=true
 
       - name: Upload Artifact
