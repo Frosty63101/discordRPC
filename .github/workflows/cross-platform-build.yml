@@ -42,7 +42,7 @@ jobs:
         run: npx electron-packager . DiscordRPC --platform=win32 --arch=x64 --out=dist --overwrite
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: windows-build
           path: dist/DiscordRPC-win32-x64/
@@ -84,7 +84,7 @@ jobs:
         run: npx electron-packager . DiscordRPC --platform=darwin --arch=x64 --out=dist --overwrite
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: macos-build
           path: dist/DiscordRPC-darwin-x64/
@@ -124,7 +124,7 @@ jobs:
         run: npx electron-packager . DiscordRPC --platform=linux --arch=x64 --out=dist --overwrite
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linux-build
           path: dist/DiscordRPC-linux-x64/
