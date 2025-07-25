@@ -1,0 +1,66 @@
+# === Node / Electron ===
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+electron-packager-debug*.txt
+
+# === React build ===
+frontend/build/
+frontend/node_modules/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.log
+*.egg-info/
+.Python
+env/
+venv/
+venv*/ 
+ENV/
+env.bak/
+.venv/
+
+# === PyInstaller outputs ===
+__pycache__/
+build/
+dist/
+
+# === macOS ===
+.DS_Store
+
+# === Windows ===
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Linux ===
+*.swp
+*~
+
+# === VSCode / JetBrains ===
+.vscode/
+.idea/
+
+# === GitHub Actions artifacts ===
+*.gz
+*.zip
+*.exe
+*.AppImage
+*.dmg
+
+# === Logs and temp ===
+*.log
+*.bak
+temp/
+*.tmp
+
+.env

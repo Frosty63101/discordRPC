@@ -1,0 +1,13 @@
+{
+    "name": "discordrpc-desktop",
+    "version": "1.0.0",
+    "main": "electron/main.js",
+    "scripts": {
+        "postinstall": "cd frontend && npm install",
+        "build": "npm run build --prefix frontend",
+        "start": "npm run build && electron ."
+    },
+    "devDependencies": {
+        "electron": "^30.5.1"
+    }
+}
