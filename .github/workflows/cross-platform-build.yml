@@ -102,13 +102,21 @@ jobs:
       - name: Install Python dependencies
         run: pip install pyinstaller flask flask-cors
 
-      - name: Build Python binary
-        run: pyinstaller backend/app-mac.spec
+      - name: Build Python binary (x86_64)
+        run: |
+          export ARCHFLAGS="-arch x86_64"
+          pyinstaller --name app_mac_bin-x86_64 backend/app-mac.spec
+
+      - name: Build Python binary (arm64)
+        run: |
+          export ARCHFLAGS="-arch arm64"
+          pyinstaller --name app_mac_bin-arm64 backend/app-mac.spec
 
       - name: Copy Flask binary to Electron location
         run: |
           mkdir -p build/app-mac
-          cp dist/app_mac_bin build/app-mac/
+          cp dist/app_mac_bin-x86_64 build/app-mac/
+          cp dist/app_mac_bin-arm64 build/app-mac/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build

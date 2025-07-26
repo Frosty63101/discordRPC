@@ -14,19 +14,17 @@ function getFlaskBinary() {
         case 'win32':
             return path.join(base, 'app', 'app', 'app.exe');
         case 'darwin':
-            return path.join(base, 'app-mac', 'app_mac_bin'); // match PyInstaller output
+            const macDir = path.join(base, 'app-mac');
+            const armPath = path.join(macDir, 'app_mac_bin-arm64');
+            const x64Path = path.join(macDir, 'app_mac_bin-x86_64');
+            
+            return process.arch === 'arm64' && fs.existsSync(armPath) ? armPath : x64Path;
         case 'linux':
             return path.join(base, 'app-linux', 'app_linux_bin'); // match PyInstaller output
         default:
             throw new Error("Unsupported OS");
     }
 }
-
-const flaskStartupTimeout = setTimeout(() => {
-    console.error("Flask startup timed out");
-    splash.loadURL('data:text/html,<h1>Backend timed out</h1>');
-    setTimeout(() => app.quit(), 5000);
-}, 10000); // 10s
 
 function waitForFlask(retries = 50) {
     return new Promise((resolve, reject) => {
@@ -50,20 +48,6 @@ function waitForFlask(retries = 50) {
 
 
 function createWindow() {
-    // Splash screen
-    splash = new BrowserWindow({
-        width: 400,
-        height: 300,
-        frame: false,
-        alwaysOnTop: true,
-        transparent: false,
-        resizable: false,
-        show: false
-    });
-    
-    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
-    splash.once('ready-to-show', () => splash.show());
-
     // Main app window
     mainWindow = new BrowserWindow({
         width: 800,
@@ -81,11 +65,32 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+    // 🟢 1. Show splash screen right away
+    splash = new BrowserWindow({
+        width: 400,
+        height: 300,
+        frame: false,
+        alwaysOnTop: true,
+        transparent: false,
+        resizable: false,
+        show: false
+    });
+
+    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
+    splash.once('ready-to-show', () => splash.show());
+
+    const flaskStartupTimeout = setTimeout(() => {
+        console.error("Flask startup timed out");
+        splash.loadURL('data:text/html,<h1>Backend timed out</h1>');
+        setTimeout(() => app.quit(), 5000);
+    }, 20000); // 20s
+
     const flaskPath = getFlaskBinary();
 
     if (!fs.existsSync(flaskPath)) {
         console.error("Flask binary not found at:", flaskPath);
-        app.quit();
+        splash.loadURL('data:text/html,<h1>Backend not found</h1>');
+        setTimeout(() => app.quit(), 3000);
         return;
     }
 
@@ -97,7 +102,8 @@ app.whenReady().then(() => {
 
     flaskProcess.on('error', err => {
         console.error("Failed to start Flask process:", err);
-        app.quit();
+        splash.loadURL('data:text/html,<h1>Flask failed to start</h1>');
+        setTimeout(() => app.quit(), 3000);
     });
 
     waitForFlask()
@@ -108,7 +114,9 @@ app.whenReady().then(() => {
         .catch(err => {
             clearTimeout(flaskStartupTimeout);
             console.error("Flask never came online:", err);
-            splash.loadURL('data:text/html,<h1>Backend failed to start</h1><p>' + err.message + '</p>');
+            if (splash) {
+                splash.loadURL(`data:text/html,<h1>Backend failed</h1><p>${err.message}</p>`);
+            }
             setTimeout(() => app.quit(), 5000);
         });
 });
@@ -139,8 +147,4 @@ app.on('will-quit', shutdown);
 app.on('window-all-closed', () => {
     shutdown();
     if (process.platform !== 'darwin') app.quit();
-    if (flaskProcess) {
-        flaskProcess.kill();
-        flaskProcess = null;
-    }
 });
