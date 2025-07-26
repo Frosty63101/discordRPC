@@ -18,8 +18,8 @@ function getFlaskBinary() {
     if (process.platform === 'darwin') {
         const macDir = path.join(base, 'app-mac');
         const arch = process.arch;
-        const armPath = path.join(macDir, 'app_mac_bin-arm64');
-        const x64Path = path.join(macDir, 'app_mac_bin-x86_64');
+        const armPath = path.join(macDir, 'app_mac_bin_arm64');
+        const x64Path = path.join(macDir, 'app_mac_bin_x86_64');
 
         if (arch === 'arm64' && fs.existsSync(armPath)) return armPath;
         if (fs.existsSync(x64Path)) return x64Path;

@@ -105,18 +105,18 @@ jobs:
       - name: Build Python binary (x86_64)
         run: |
           export ARCHFLAGS="-arch x86_64"
-          pyinstaller backend/app-mac-x86_64.spec
+          pyinstaller backend/app_mac_x86_64.spec
 
       - name: Build Python binary (arm64)
         run: |
           export ARCHFLAGS="-arch arm64"
-          pyinstaller backend/app-mac-arm64.spec
+          pyinstaller backend/app_mac_arm64.spec
 
       - name: Copy Flask binary to Electron location
         run: |
           mkdir -p build/app-mac
-          cp dist/app-mac-x86_64/app_mac_bin-x86_64 build/app-mac/
-          cp dist/app-mac-arm64/app_mac_bin-arm64 build/app-mac/
+          cp dist/app_mac_x86_64/app_mac_bin_x86_64 build/app-mac/
+          cp dist/app_mac_arm64/app_mac_bin_arm64 build/app-mac/
 
       - name: Clean PyInstaller build folder
         run: rm -rf backend/build
