@@ -108,7 +108,7 @@ jobs:
           cd pyinstaller/bootloader
           python3 ./waf distclean all --target-arch=64bit
           cd ../..
-          pip install .
+          pip install ./pyinstaller
 
       - name: Build Python binary (x86_64)
         run: |
@@ -193,7 +193,7 @@ jobs:
           cd pyinstaller/bootloader
           python3 ./waf distclean all --target-arch=64bit-arm
           cd ../..
-          pip install .
+          pip install ./pyinstaller
 
       - name: Build Python binary (arm64)
         run: |
