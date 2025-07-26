@@ -106,7 +106,7 @@ jobs:
         run: |
           git clone https://github.com/pyinstaller/pyinstaller.git
           cd pyinstaller/bootloader
-          python3 ./waf distclean all --target-arch=x86_64
+          python3 ./waf distclean all --target-arch=64bit
           cd ../..
           pip install .
 
@@ -191,7 +191,7 @@ jobs:
         run: |
           git clone https://github.com/pyinstaller/pyinstaller.git
           cd pyinstaller/bootloader
-          python3 ./waf distclean all --target-arch=arm64
+          python3 ./waf distclean all --target-arch=64bit-arm
           cd ../..
           pip install .
 
