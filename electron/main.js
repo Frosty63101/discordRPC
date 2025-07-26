@@ -10,21 +10,30 @@ let mainWindow;
 
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
-    switch (process.platform) {
-        case 'win32':
-            return path.join(base, 'app', 'app', 'app.exe');
-        case 'darwin':
-            const macDir = path.join(base, 'app-mac');
-            const armPath = path.join(macDir, 'app_mac_bin-arm64');
-            const x64Path = path.join(macDir, 'app_mac_bin-x86_64');
-            
-            return process.arch === 'arm64' && fs.existsSync(armPath) ? armPath : x64Path;
-        case 'linux':
-            return path.join(base, 'app-linux', 'app_linux_bin'); // match PyInstaller output
-        default:
-            throw new Error("Unsupported OS");
+
+    if (process.platform === 'win32') {
+        return path.join(base, 'app', 'app', 'app.exe');
     }
+
+    if (process.platform === 'darwin') {
+        const macDir = path.join(base, 'app-mac');
+        const arch = process.arch;
+        const armPath = path.join(macDir, 'app_mac_bin-arm64');
+        const x64Path = path.join(macDir, 'app_mac_bin-x86_64');
+
+        if (arch === 'arm64' && fs.existsSync(armPath)) return armPath;
+        if (fs.existsSync(x64Path)) return x64Path;
+
+        throw new Error(`No valid macOS binary found for architecture: ${arch}`);
+    }
+
+    if (process.platform === 'linux') {
+        return path.join(base, 'app-linux', 'app_linux_bin');
+    }
+
+    throw new Error(`Unsupported platform: ${process.platform}`);
 }
+
 
 function waitForFlask(retries = 50) {
     return new Promise((resolve, reject) => {

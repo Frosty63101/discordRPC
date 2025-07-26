@@ -37,4 +37,5 @@ coll = COLLECT(exe,
                a.datas,
                strip=False,
                upx=True,
-               name='app-mac')
+               name='app-mac-x86_64',
+               distpath='dist/app-mac-x86_64',)
