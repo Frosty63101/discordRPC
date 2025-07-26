@@ -1,39 +1,60 @@
 const path = require('path');
 const fs = require('fs');
 const { app, BrowserWindow } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 
 let flaskProcess;
 let splash;
 let mainWindow;
 
+let rosettaAvailable = null;
+function isRosettaInstalled() {
+    if (rosettaAvailable !== null) return rosettaAvailable;
+    try {
+        const res = spawnSync('arch', ['-x86_64', 'true']);
+        rosettaAvailable = res.status === 0;
+    } catch {
+        rosettaAvailable = false;
+    }
+    return rosettaAvailable;
+}
+
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
 
     if (process.platform === 'win32') {
-        return path.join(base, 'app', 'app', 'app.exe');
+        return { binaryPath: path.join(base, 'app', 'app', 'app.exe'), archPrefix: null };
     }
 
     if (process.platform === 'darwin') {
         const macDir = path.join(base, 'app-mac');
-        const arch = process.arch;
         const armPath = path.join(macDir, 'app_mac_bin_arm64');
         const x64Path = path.join(macDir, 'app_mac_bin_x86_64');
+        const arch = process.arch;
 
-        if (arch === 'arm64' && fs.existsSync(armPath)) return armPath;
-        if (fs.existsSync(x64Path)) return x64Path;
+        if (arch === 'arm64') {
+            if (fs.existsSync(armPath)) {
+                return { binaryPath: armPath, archPrefix: null };
+            } else if (fs.existsSync(x64Path) && isRosettaInstalled()) {
+                return { binaryPath: x64Path, archPrefix: 'arch' };
+            }
+        }
+
+
+        if (fs.existsSync(x64Path)) {
+            return { binaryPath: x64Path, archPrefix: null };
+        }
 
         throw new Error(`No valid macOS binary found for architecture: ${arch}`);
     }
 
     if (process.platform === 'linux') {
-        return path.join(base, 'app-linux', 'app_linux_bin');
+        return { binaryPath: path.join(base, 'app-linux', 'app_linux_bin'), archPrefix: null };
     }
 
     throw new Error(`Unsupported platform: ${process.platform}`);
 }
-
 
 function waitForFlask(retries = 50) {
     return new Promise((resolve, reject) => {
@@ -55,7 +76,6 @@ function waitForFlask(retries = 50) {
     });
 }
 
-
 function createWindow() {
     // Main app window
     mainWindow = new BrowserWindow({
@@ -74,7 +94,6 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-    // 🟢 1. Show splash screen right away
     splash = new BrowserWindow({
         width: 400,
         height: 300,
@@ -94,16 +113,18 @@ app.whenReady().then(() => {
         setTimeout(() => app.quit(), 5000);
     }, 20000); // 20s
 
-    const flaskPath = getFlaskBinary();
+    const { binaryPath, archPrefix } = getFlaskBinary();
 
-    if (!fs.existsSync(flaskPath)) {
-        console.error("Flask binary not found at:", flaskPath);
+    if (!fs.existsSync(binaryPath)) {
+        console.error("Flask binary not found at:", binaryPath);
         splash.loadURL('data:text/html,<h1>Backend not found</h1>');
         setTimeout(() => app.quit(), 3000);
         return;
     }
 
-    flaskProcess = spawn(flaskPath, [], {
+    const spawnArgs = archPrefix === 'arch' ? ['-x86_64', binaryPath] : [binaryPath];
+
+    flaskProcess = spawn(archPrefix || spawnArgs[0], archPrefix ? spawnArgs.slice(1) : [], {
         shell: true,
         stdio: 'inherit',
         windowsHide: true
@@ -111,8 +132,26 @@ app.whenReady().then(() => {
 
     flaskProcess.on('error', err => {
         console.error("Failed to start Flask process:", err);
-        splash.loadURL('data:text/html,<h1>Flask failed to start</h1>');
-        setTimeout(() => app.quit(), 3000);
+        const isRosetta = archPrefix === 'arch';
+        const msg = isRosetta
+    ? encodeURIComponent(
+        `<h1>Rosetta 2 Required</h1>
+        <p>This app requires Rosetta 2 to run the backend on Apple Silicon Macs.</p>
+        <p>Run this command in Terminal:</p>
+        <code>softwareupdate --install-rosetta</code>
+        <p><a href="https://support.apple.com/en-us/HT211861" target="_blank">Apple Support: About Rosetta</a></p>`
+        )
+    : encodeURIComponent('<h1>Flask failed to start</h1>');
+
+        splash.loadURL(`data:text/html,${msg}`);
+
+        setTimeout(() => app.quit(), 5000);
+    });
+
+    flaskProcess.on('exit', (code) => {
+        if (code !== 0 && archPrefix === 'arch') {
+            splash.loadURL(`data:text/html,<h1>Rosetta launch failed</h1><p>Try running this:</p><code>softwareupdate --install-rosetta</code>`);
+        }
     });
 
     waitForFlask()
