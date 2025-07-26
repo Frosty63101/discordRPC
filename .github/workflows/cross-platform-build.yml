@@ -118,7 +118,7 @@ jobs:
       - name: Copy Flask binary to Electron location
         run: |
           mkdir -p build/app-mac-x86_64
-          cp dist/app_mac_x86_64/* build/app-mac-x86_64/
+          cp -R dist/app_mac_x86_64/* build/app-mac-x86_64/
           chmod +x build/app-mac-x86_64/app_mac_bin_x86_64
 
       - name: Clean PyInstaller build folder
@@ -203,7 +203,7 @@ jobs:
       - name: Copy Flask binary to Electron location
         run: |
           mkdir -p build/app-mac-arm64
-          cp dist/app_mac_arm64/* build/app-mac-arm64/
+          cp -R dist/app_mac_arm64/* build/app-mac-arm64/
           chmod +x build/app-mac-arm64/app_mac_bin_arm64
 
       - name: Clean PyInstaller build folder
