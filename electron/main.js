@@ -28,9 +28,8 @@ function getFlaskBinary() {
     }
 
     if (process.platform === 'darwin') {
-        const macDir = path.join(base, 'app-mac');
-        const armPath = path.join(macDir, 'app_mac_bin_arm64');
-        const x64Path = path.join(macDir, 'app_mac_bin_x86_64');
+        const armPath = path.join(base, 'app-mac-arm64', 'app_mac_bin_arm64');
+        const x64Path = path.join(base, 'app-mac-x86_64', 'app_mac_bin_x86_64');
         const arch = process.arch;
 
         if (arch === 'arm64') {
@@ -40,7 +39,6 @@ function getFlaskBinary() {
                 return { binaryPath: x64Path, archPrefix: 'arch' };
             }
         }
-
 
         if (fs.existsSync(x64Path)) {
             return { binaryPath: x64Path, archPrefix: null };
