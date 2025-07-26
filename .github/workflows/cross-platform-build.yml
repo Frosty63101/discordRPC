@@ -142,8 +142,8 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build-arm64
-          path: dist/DiscordRPC-darwin-arm64/
+          name: macos-build-x86_64
+          path: dist/DiscordRPC-darwin-x64/
 
       - name: Upload Release
         if: github.event_name == 'release'
@@ -202,7 +202,7 @@ jobs:
       - name: Package Electron App
         run: |
           npx electron-packager . DiscordRPC \
-            --platform=darwin --arch=x64 --out=dist --overwrite \
+            --platform=darwin --arch=arm64 --out=dist --overwrite \
             --ignore="^/node_modules" \
             --ignore="^/frontend/node_modules" \
             --prune=true
@@ -217,7 +217,7 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/DiscordRPC-darwin-x64/**/*
+          files: dist/DiscordRPC-darwin-arm64/**/*
 
   build-linux:
     name: Linux Build
