@@ -105,12 +105,12 @@ jobs:
       - name: Build Python binary (x86_64)
         run: |
           export ARCHFLAGS="-arch x86_64"
-          pyinstaller --name app_mac_bin-x86_64 backend/app-mac.spec
+          pyinstaller backend/app-mac.spec
 
       - name: Build Python binary (arm64)
         run: |
           export ARCHFLAGS="-arch arm64"
-          pyinstaller --name app_mac_bin-arm64 backend/app-mac.spec
+          pyinstaller backend/app-mac.spec
 
       - name: Copy Flask binary to Electron location
         run: |
