@@ -1,13 +1,21 @@
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Tray, Menu } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 
-let flaskProcess;
-let splash;
-let mainWindow;
+let flaskProcess = null;
+let splash = null;
+let mainWindow = null;
+let tray = null;
 
+// Only allow one instance
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    app.quit();
+}
+
+// Check Rosetta (macOS)
 let rosettaAvailable = null;
 function isRosettaInstalled() {
     if (rosettaAvailable !== null) return rosettaAvailable;
@@ -20,6 +28,7 @@ function isRosettaInstalled() {
     return rosettaAvailable;
 }
 
+// Determine binary path
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
 
@@ -33,17 +42,11 @@ function getFlaskBinary() {
         const arch = process.arch;
 
         if (arch === 'arm64') {
-            if (fs.existsSync(armPath)) {
-                return { binaryPath: armPath, archPrefix: null };
-            } else if (fs.existsSync(x64Path) && isRosettaInstalled()) {
-                return { binaryPath: x64Path, archPrefix: 'arch' };
-            }
+            if (fs.existsSync(armPath)) return { binaryPath: armPath, archPrefix: null };
+            if (fs.existsSync(x64Path) && isRosettaInstalled()) return { binaryPath: x64Path, archPrefix: 'arch' };
         }
 
-        if (fs.existsSync(x64Path)) {
-            return { binaryPath: x64Path, archPrefix: null };
-        }
-
+        if (fs.existsSync(x64Path)) return { binaryPath: x64Path, archPrefix: null };
         throw new Error(`No valid macOS binary found for architecture: ${arch}`);
     }
 
@@ -54,28 +57,92 @@ function getFlaskBinary() {
     throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
+// Load JSON config from user dir
+function loadLocalConfig() {
+    const home = process.env[process.platform === "win32" ? "USERPROFILE" : "HOME"];
+    const configPath = path.join(home, ".config", "app_config.json");
+    if (fs.existsSync(configPath)) {
+        try {
+            return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        } catch (e) {
+            console.error("Failed to parse config:", e);
+        }
+    }
+    return {};
+}
+const config = loadLocalConfig();
+
+// Start the app
+app.whenReady().then(() => {
+    createSplash();
+
+    const { binaryPath, archPrefix } = getFlaskBinary();
+    if (!fs.existsSync(binaryPath)) {
+        splash.loadURL(`data:text/html,<h1>Backend not found</h1><p>${binaryPath}</p>`);
+        return setTimeout(() => app.quit(), 5000);
+    }
+
+    const args = archPrefix === 'arch' ? ['-x86_64', binaryPath] : [binaryPath];
+
+    flaskProcess = spawn(archPrefix || args[0], archPrefix ? args.slice(1) : [], {
+        shell: true,
+        stdio: 'inherit',
+        windowsHide: true
+    });
+
+    flaskProcess.on('error', err => {
+        console.error("Flask failed:", err);
+        const msg = archPrefix
+            ? `<h1>Rosetta 2 Required</h1><p>Run: <code>softwareupdate --install-rosetta</code></p>`
+            : "<h1>Flask failed to start</h1>";
+        splash.loadURL(`data:text/html,${encodeURIComponent(msg)}`);
+        setTimeout(() => app.quit(), 6000);
+    });
+
+    waitForFlask()
+        .then(() => {
+            createMainWindow();
+        })
+        .catch(err => {
+            console.error("Flask never came online:", err);
+            splash.loadURL(`data:text/html,<h1>Backend failed</h1><p>${err.message}</p>`);
+            setTimeout(() => app.quit(), 5000);
+        });
+});
+
+function createSplash() {
+    splash = new BrowserWindow({
+        width: 400,
+        height: 300,
+        frame: false,
+        alwaysOnTop: true,
+        resizable: false,
+        show: false,
+    });
+    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
+    splash.once('ready-to-show', () => splash.show());
+}
+
 function waitForFlask(retries = 50) {
     return new Promise((resolve, reject) => {
         const interval = setInterval(() => {
             console.log(`Waiting for Flask... (${retries} retries left)`);
             http.get('http://localhost:5000/api/hello', res => {
                 if (res.statusCode === 200) {
-                    console.log("Flask responded successfully");
                     clearInterval(interval);
                     resolve();
                 }
             }).on('error', () => {
                 if (--retries <= 0) {
                     clearInterval(interval);
-                    reject(new Error("Flask failed to start"));
+                    reject(new Error("Flask failed to respond"));
                 }
             });
         }, 200);
     });
 }
 
-function createWindow() {
-    // Main app window
+function createMainWindow() {
     mainWindow = new BrowserWindow({
         width: 800,
         height: 600,
@@ -89,83 +156,30 @@ function createWindow() {
         if (splash) splash.close();
         mainWindow.show();
     });
-}
 
-app.whenReady().then(() => {
-    splash = new BrowserWindow({
-        width: 400,
-        height: 300,
-        frame: false,
-        alwaysOnTop: true,
-        transparent: false,
-        resizable: false,
-        show: false
-    });
-
-    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
-    splash.once('ready-to-show', () => splash.show());
-
-    const flaskStartupTimeout = setTimeout(() => {
-        console.error("Flask startup timed out");
-        splash.loadURL('data:text/html,<h1>Backend timed out</h1>');
-        setTimeout(() => app.quit(), 5000);
-    }, 20000); // 20s
-
-    const { binaryPath, archPrefix } = getFlaskBinary();
-
-    if (!fs.existsSync(binaryPath)) {
-        console.error("Flask binary not found at:", binaryPath);
-        splash.loadURL('data:text/html,<h1>Backend not found</h1>');
-        setTimeout(() => app.quit(), 3000);
-        return;
-    }
-
-    const spawnArgs = archPrefix === 'arch' ? ['-x86_64', binaryPath] : [binaryPath];
-
-    flaskProcess = spawn(archPrefix || spawnArgs[0], archPrefix ? spawnArgs.slice(1) : [], {
-        shell: true,
-        stdio: 'inherit',
-        windowsHide: true
-    });
-
-    flaskProcess.on('error', err => {
-        console.error("Failed to start Flask process:", err);
-        const isRosetta = archPrefix === 'arch';
-        const msg = isRosetta
-    ? encodeURIComponent(
-        `<h1>Rosetta 2 Required</h1>
-        <p>This app requires Rosetta 2 to run the backend on Apple Silicon Macs.</p>
-        <p>Run this command in Terminal:</p>
-        <code>softwareupdate --install-rosetta</code>
-        <p><a href="https://support.apple.com/en-us/HT211861" target="_blank">Apple Support: About Rosetta</a></p>`
-        )
-    : encodeURIComponent('<h1>Flask failed to start</h1>');
-
-        splash.loadURL(`data:text/html,${msg}`);
-
-        setTimeout(() => app.quit(), 5000);
-    });
-
-    flaskProcess.on('exit', (code) => {
-        if (code !== 0 && archPrefix === 'arch') {
-            splash.loadURL(`data:text/html,<h1>Rosetta launch failed</h1><p>Try running this:</p><code>softwareupdate --install-rosetta</code>`);
+    mainWindow.on('close', (e) => {
+        if (config.minimizeToTray) {
+            e.preventDefault();
+            mainWindow.hide();
         }
     });
 
-    waitForFlask()
-        .then(() => {
-            clearTimeout(flaskStartupTimeout);
-            createWindow();
-        })
-        .catch(err => {
-            clearTimeout(flaskStartupTimeout);
-            console.error("Flask never came online:", err);
-            if (splash) {
-                splash.loadURL(`data:text/html,<h1>Backend failed</h1><p>${err.message}</p>`);
-            }
-            setTimeout(() => app.quit(), 5000);
-        });
-});
+    setupTray();
+}
+
+function setupTray() {
+    let trayIcon = path.join(__dirname, 'iconTemplate.png');
+    if (!fs.existsSync(trayIcon)) trayIcon = undefined;
+
+    tray = new Tray(trayIcon);
+    const contextMenu = Menu.buildFromTemplate([
+        { label: 'Show App', click: () => mainWindow.show() },
+        { label: 'Quit', click: () => { shutdown(); app.quit(); } }
+    ]);
+    tray.setToolTip('Goodreads Discord RPC');
+    tray.setContextMenu(contextMenu);
+    tray.on('double-click', () => mainWindow.show());
+}
 
 function shutdown() {
     if (flaskProcess) {
@@ -176,21 +190,26 @@ function shutdown() {
             method: 'POST'
         }, res => {
             console.log(`Flask shutdown response: ${res.statusCode}`);
-            flaskProcess = null;
         });
 
         req.on('error', (err) => {
-            console.error("Error shutting down Flask:", err);
+            console.error("Flask shutdown failed:", err);
             flaskProcess.kill();
-            flaskProcess = null;
         });
 
         req.end();
+        flaskProcess = null;
     }
 }
 
+// Handle graceful exits
 app.on('will-quit', shutdown);
 app.on('window-all-closed', () => {
-    shutdown();
     if (process.platform !== 'darwin') app.quit();
+});
+app.on('second-instance', () => {
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+    }
 });

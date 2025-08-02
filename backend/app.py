@@ -193,81 +193,102 @@ def presence_initialize():
 
 @app.route("/api/presence/start", methods=["POST"])
 def presence_start():
+    global presenceThread
     should_run_event.set()
-    return jsonify({"message": "Presence loop started."})
+    if presenceThread is None or not presenceThread.is_alive():
+        presenceThread = threading.Thread(target=run_presence, daemon=True)
+        presenceThread.start()
+        return jsonify({"message": "Presence thread started."})
+    else:
+        return jsonify({"message": "Presence thread already running."})
+
 
 @app.route("/api/presence/stop", methods=["POST"])
 def presence_stop():
     should_run_event.clear()
     return jsonify({"message": "Presence loop stopped."})
 
+@app.route("/api/presence/status", methods=["GET"])
+def presence_status():
+    return jsonify({
+        "running": is_running_event.is_set(),
+        "should_run": should_run_event.is_set(),
+        "initialized": init_event.is_set(),
+        "thread_alive": presenceThread.is_alive() if presenceThread else False
+    })
 
 def run_presence():
-    # if the init_event is set then run, otherwise wait for it to be set
-    init_event.wait()
+    try:
+        from pypresence import Presence
+    except ImportError:
+        print("pypresence not installed.")
+        return
+
+    init_event.wait()  # wait for at least one book to be scraped
     if not is_running_event.is_set():
-        # Start the Discord presence
         discord_app_id = CONFIG.get("discord_app_id")
         if not discord_app_id:
-            print("Client ID not found in config.")
-        presence = pypresence.Presence(discord_app_id)
-        presence.connect()
+            print("Discord App ID missing from config.")
+            return
+
+        presence = Presence(discord_app_id)
+        try:
+            presence.connect()
+        except Exception as e:
+            print(f"Failed to connect to Discord: {e}")
+            return
+
         is_running_event.set()
-        while should_run_event.is_set():
-            if current_book:
-                try:
-                    presence.update(
-                        details=current_book["title"],
-                        state=f"by {current_book['author'] if current_book['author'] else 'Unknown Author'}",
-                        large_image=current_book["coverArt"] or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png",
-                        large_text="Reading via Goodreads",
-                        start=int(time.mktime(time.strptime(current_book["startDate"], "%b %d, %Y"))) if current_book["startDate"] else None,
-                        buttons=[{
-                            "label": "View Goodreads",
-                            "url": f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
-                        }]
-                    )
-                    statusInfo["status"].append("Active")
-                    statusInfo["message"].append("Presence updated successfully.")
-                except Exception as e:
-                    error_message = str(e).lower()
-                    if "pipe" in error_message or "closed" in error_message or isinstance(e, (ConnectionResetError, BrokenPipeError, OSError)):
+        print("Discord presence connected.")
+        
+        try:
+            while should_run_event.is_set():
+                if current_book:
+                    try:
+                        presence.update(
+                            details=current_book["title"],
+                            state=f"by {current_book['author'] or 'Unknown Author'}",
+                            large_image=current_book["coverArt"] or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png",
+                            large_text="Reading via Goodreads",
+                            start=int(time.mktime(time.strptime(current_book["startDate"], "%b %d, %Y"))) if current_book["startDate"] else None,
+                            buttons=[{
+                                "label": "View Goodreads",
+                                "url": f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
+                            }]
+                        )
+                        statusInfo["status"].append("Active")
+                        statusInfo["message"].append("Presence updated successfully.")
+                    except Exception as e:
+                        error = str(e)
                         statusInfo["status"].append("Error")
-                        statusInfo["message"].append(error_message)
+                        statusInfo["message"].append(error)
                         statusInfo["lastUpdated"].append(time.time())
+
                         try:
+                            presence.clear()
                             presence.close()
-                        except Exception:
-                            statusInfo["status"].append("Error")
-                            statusInfo["message"].append("Failed to close presence connection.")
-                            statusInfo["lastUpdated"].append(time.time())
+                        except:
                             pass
+                        
+                        # attempt reconnect
                         try:
-                            presence = pypresence.Presence(discord_app_id)
+                            presence = Presence(discord_app_id)
                             presence.connect()
-                            presence.update(
-                                details=current_book["title"],
-                                state=f"by {current_book['author'] if current_book['author'] else 'Unknown Author'}",
-                                large_image=current_book["cover"] or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png",
-                                large_text="Reading via Goodreads",
-                                start=int(time.mktime(time.strptime(current_book["start"], "%b %d, %Y"))) if current_book["start"] else None,
-                                buttons=[{
-                                    "label": "View Goodreads",
-                                    "url": f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
-                                }]
-                            )
-                            statusInfo["status"].append("Reconnected")
-                            statusInfo["message"].append("Reconnected successfully.")
-                            statusInfo["lastUpdated"].append(time.time())
                         except Exception as reconnectError:
                             statusInfo["status"].append("Error")
-                            statusInfo["message"].append(f"Reconnection failed: {str(reconnectError)}")
+                            statusInfo["message"].append(f"Reconnect failed: {reconnectError}")
                             statusInfo["lastUpdated"].append(time.time())
                             time.sleep(10)
                             continue
                 time.sleep(CONFIG.get("update_interval", 15))
-    else:
-        return jsonify({"message": "Discord presence is already running."})
+        finally:
+            print("Presence loop exited.")
+            is_running_event.clear()
+            try:
+                presence.clear()
+                presence.close()
+            except:
+                pass
 
 def run():
     app.run(host="localhost", port=5000)
