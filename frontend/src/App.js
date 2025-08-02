@@ -106,7 +106,9 @@ function App() {
     fetch('http://localhost:5000/shutdown', { method: 'POST' })
       .then(() => {
         showMessage('🛑 Exiting...');
-        setTimeout(() => window.close(), 2000);
+        setTimeout(() => {
+          window.electron?.ipcRenderer?.send('force-quit');
+        }, 2000);
       });
   };
 
@@ -172,9 +174,12 @@ function App() {
         <input
           type="checkbox"
           checked={config.startOnStartup}
-          onChange={e =>
-            setConfig({ ...config, startOnStartup: e.target.checked })
-          }
+          onChange={e => {
+            setConfig({ ...config, startOnStartup: e.target.checked });
+            const updated = e.target.checked;
+            setConfig({ ...config, startOnStartup: updated });
+            fetch('http://localhost:5000/api/startup/enable', { method: 'POST' });
+          }}
         />
         {' '}Start on Startup
       </label>

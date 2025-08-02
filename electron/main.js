@@ -15,6 +15,13 @@ if (!gotTheLock) {
     app.quit();
 }
 
+const { ipcMain } = require('electron');
+
+ipcMain.on('force-quit', () => {
+    shutdown();
+    app.quit();
+});
+
 // Check Rosetta (macOS)
 let rosettaAvailable = null;
 function isRosettaInstalled() {
@@ -161,6 +168,10 @@ function createMainWindow() {
         if (config.minimizeToTray) {
             e.preventDefault();
             mainWindow.hide();
+        } else {
+            // Fully exit
+            shutdown();
+            app.quit();
         }
     });
 
@@ -204,9 +215,14 @@ function shutdown() {
 
 // Handle graceful exits
 app.on('will-quit', shutdown);
+
 app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    // This ensures full shutdown on Linux/Windows
+    if (process.platform !== 'darwin') {
+        app.quit();
+    }
 });
+
 app.on('second-instance', () => {
     if (mainWindow) {
         mainWindow.show();

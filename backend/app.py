@@ -28,6 +28,15 @@ DEFAULT_CONFIG = {
     "startByDefault": False
 }
 
+def log(message):
+    try:
+        log_path = os.path.join(os.path.expanduser("~"), ".config", "gr_rpc_log.txt")
+        with open(log_path, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+    except Exception:
+        pass
+
+
 def load_config():
     global CONFIG
     # load from cross platform safe json config file stored somewhere in user directory
@@ -35,11 +44,13 @@ def load_config():
     if os.path.exists(path):
         with open(path, "r") as f:
             CONFIG = json.load(f)
+        log(f"Config loaded from {path}")
     else:
         CONFIG = DEFAULT_CONFIG.copy()
         with open(path, "w") as f:
             json.dump(CONFIG, f)
-    
+        log(f"Config created at {path}")
+
     return CONFIG
 
 CONFIG = load_config()
@@ -55,6 +66,33 @@ statusInfo = {
     "lastUpdated": [None]
 }
 
+@app.route("/api/startup/enable", methods=["POST"])
+def enable_startup():
+    try:
+        log("Updating startup preference.")
+        import platform
+        if platform.system() != "Windows":
+            return jsonify({"error": "Startup shortcut only supported on Windows"}), 400
+        from win32com.client import Dispatch
+        startup_dir = os.path.join(os.getenv('APPDATA'), "Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+        shortcut_path = os.path.join(startup_dir, "GoodreadsRPC.lnk")
+        script_path = os.path.realpath(sys.argv[0])
+
+        if CONFIG.get("startOnStartup"):
+            shell = Dispatch("WScript.Shell")
+            shortcut = shell.CreateShortCut(shortcut_path)
+            shortcut.Targetpath = script_path
+            shortcut.WorkingDirectory = os.path.dirname(script_path)
+            shortcut.IconLocation = script_path
+            shortcut.save()
+        else:
+            if os.path.exists(shortcut_path):
+                os.remove(shortcut_path)
+        return jsonify({"message": "Startup preference updated."})
+    except Exception as e:
+        log(f"Error updating startup preference: {e}")
+        return jsonify({"error": str(e)}), 500
+
 #region scraper
 def get_books():
     global current_book, goodreads_id
@@ -62,18 +100,23 @@ def get_books():
         url = f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
+        log(f"Fetching books from {url}")
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
+            log(f"Failed to fetch books: {response.status_code} {response.reason}")
             return None
         soup = BeautifulSoup(response.text, 'html.parser')
         bookTable = soup.find("table", {"id": "books"})
         if not bookTable:
+            log("No book table found in the response.")
             return None
         rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
         if not rows:
+            log("No book rows found in the table.")
             return None
         books = {}
         for row in rows:
+            log("Processing book row.")
             title = row.find("td", class_="field title").find("a").get_text(strip=True)
             author = row.find("td", class_="field author").find("a").get_text(strip=True)
             coverArt = row.find("td", class_="field cover").find("img")["src"]
@@ -84,6 +127,7 @@ def get_books():
             books[isbn] = { "isbn": isbn, "title": title, "author": author, "coverArt": coverArt, "startDate": startDate }
         return books
     except Exception as e:
+        log(f"Error fetching books: {e}")
         return None
 
 @app.route("/api/scraper/get_books", methods=["GET"])
@@ -92,6 +136,7 @@ def scraper_get_books():
     global books
     books = get_books()
     if books:
+        log(f"Books fetched: {len(books)} found.")
         if current_isbn and current_isbn in books:
             current_book = books[current_isbn]
         else:
@@ -100,43 +145,52 @@ def scraper_get_books():
         init_event.set()
         return jsonify(books, current_isbn), 200
     else:
+        log("No books found.")
         return jsonify({"error": "No books found."}), 404
 
 #region API Endpoints
 @app.route("/api/hello")
 def hello():
+    log("Hello endpoint called.")
     return jsonify({"message": "Hello from Flask!"})
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
+    log("Shutdown endpoint called.")
     pid = os.getpid()
     threading.Thread(target=lambda: os.kill(pid, signal.SIGTERM)).start()
     return jsonify({"message": "Flask shutting down..."})
 
 @app.route("/status", methods=["GET"])
 def status():
+    log("Status endpoint called.")
     return jsonify({"status": "Flask is running!"})
 
 @app.route("/api/thread", methods=["POST"])
 def thread():
+    log("Thread endpoint called.")
     thread_id = threading.get_ident()
     return jsonify({"thread_id": thread_id})
 
 @app.route("/api/pid", methods=["GET"])
 def pid():
+    log("PID endpoint called.")
     return jsonify({"pid": os.getpid()})
 
 @app.route("/api/getStartByDefault", methods=["GET"])
 def get_start_by_default():
+    log("Get start by default endpoint called.")
     return jsonify({"startByDefault": CONFIG.get("startByDefault", False)})
 
 #region Config
 @app.route("/api/config", methods=["GET"])
 def get_config():
+    log("Get config endpoint called.")
     return jsonify(CONFIG)
 
 @app.route("/api/config", methods=["POST"])
 def update_config():
+    log("Update config endpoint called.")
     global CONFIG
     data = request.json
     CONFIG.update(data)
@@ -144,6 +198,7 @@ def update_config():
 
 @app.route("/api/config/save", methods=["POST"])
 def save_config():
+    log("Save config endpoint called.")
     global CONFIG
     updated_config = request.json
     CONFIG.update(updated_config)
@@ -154,6 +209,7 @@ def save_config():
 
 @app.route("/api/book/select", methods=["POST"])
 def select_book():
+    log("Select book endpoint called.")
     global current_isbn, current_book, books
     data = request.json
     isbn = data.get("isbn")
@@ -167,17 +223,20 @@ def select_book():
         return jsonify({"error": "Invalid ISBN."}), 400
 
 def save_config_internal():
+    log("Internal save config called.")
     path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
     with open(path, "w") as f:
         json.dump(CONFIG, f)
 
 @app.route("/api/book/current", methods=["GET"])
 def get_current_book():
+    log("Get current book endpoint called.")
     return jsonify(current_book)
 
 #region Status
 @app.route("/api/status", methods=["GET"])
 def get_status():
+    log("Get status endpoint called.")
     global statusInfo
     tempStatusInfo = statusInfo.copy()
     statusInfo = {
@@ -190,6 +249,7 @@ def get_status():
 #region Presence
 @app.route("/api/presence/initialize", methods=["POST"])
 def presence_initialize():
+    log("Presence initialize endpoint called.")
     global presenceThread
     if presenceThread is None:
         presenceThread = threading.Thread(target=run_presence)
@@ -198,10 +258,12 @@ def presence_initialize():
 
 @app.route("/api/presence/start", methods=["POST"])
 def presence_start():
+    log("Presence start endpoint called.")
     global presenceThread, should_run_event, is_running_event, init_event, current_book, books, current_isbn
     should_run_event.set()
     books = get_books()
     if not books:
+        log("No books found.")
         return jsonify({"error": "No books found."}), 404
     if not current_book:
         current_book = next(iter(books.values()))
@@ -210,6 +272,7 @@ def presence_start():
         save_config_internal()
     init_event.set()
     if presenceThread is None or not presenceThread.is_alive():
+        log("Starting presence thread.")
         presenceThread = threading.Thread(target=run_presence, daemon=True)
         presenceThread.start()
         return jsonify({"message": "Presence thread started."})
@@ -219,11 +282,13 @@ def presence_start():
 
 @app.route("/api/presence/stop", methods=["POST"])
 def presence_stop():
+    log("Presence stop endpoint called.")
     should_run_event.clear()
     return jsonify({"message": "Presence loop stopped."})
 
 @app.route("/api/presence/status", methods=["GET"])
 def presence_status():
+    log("Presence status endpoint called.")
     return jsonify({
         "running": is_running_event.is_set(),
         "should_run": should_run_event.is_set(),
@@ -232,33 +297,36 @@ def presence_status():
     })
 
 def run_presence():
+    global current_book, goodreads_id, is_running_event, should_run_event, init_event, statusInfo
+    log("Presence thread started.")
     try:
         from pypresence import Presence
     except ImportError:
-        print("pypresence not installed.")
+        log("pypresence not installed.")
         return
 
     init_event.wait()  # wait for at least one book to be scraped
     if not is_running_event.is_set():
         discord_app_id = CONFIG.get("discord_app_id")
         if not discord_app_id:
-            print("Discord App ID missing from config.")
+            log("Discord App ID missing from config.")
             return
 
         presence = Presence(discord_app_id)
         try:
             presence.connect()
         except Exception as e:
-            print(f"Failed to connect to Discord: {e}")
+            log(f"Failed to connect to Discord: {e}")
             return
 
         is_running_event.set()
-        print("Discord presence connected.")
-        
+        log("Discord presence connected.")
+
         try:
             while should_run_event.is_set():
                 if current_book:
                     try:
+                        log(f"Updating presence for book: {current_book['title']}")
                         presence.update(
                             details=current_book["title"],
                             state=f"by {current_book['author'] or 'Unknown Author'}",
@@ -273,22 +341,26 @@ def run_presence():
                         statusInfo["status"].append("Active")
                         statusInfo["message"].append("Presence updated successfully.")
                     except Exception as e:
+                        log(f"Error updating presence: {e}")
                         error = str(e)
                         statusInfo["status"].append("Error")
                         statusInfo["message"].append(error)
                         statusInfo["lastUpdated"].append(time.time())
 
                         try:
+                            log(f"Error updating presence: {error}")
                             presence.clear()
                             presence.close()
                         except:
-                            pass
-                        
+                            log("Failed to clear presence.")
+
                         # attempt reconnect
                         try:
+                            log(f"Reconnecting presence due to error: {error}")
                             presence = Presence(discord_app_id)
                             presence.connect()
                         except Exception as reconnectError:
+                            log(f"Reconnect failed: {reconnectError}")
                             statusInfo["status"].append("Error")
                             statusInfo["message"].append(f"Reconnect failed: {reconnectError}")
                             statusInfo["lastUpdated"].append(time.time())
@@ -296,12 +368,14 @@ def run_presence():
                             continue
                 time.sleep(CONFIG.get("update_interval", 15))
         finally:
-            print("Presence loop exited.")
+            log("Presence loop exiting.")
             is_running_event.clear()
             try:
+                log("Clearing presence on exit.")
                 presence.clear()
                 presence.close()
             except:
+                log("Failed to clear presence on exit.")
                 pass
 
 def run():
