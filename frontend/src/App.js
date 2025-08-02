@@ -18,6 +18,16 @@ function App() {
     fetch('http://localhost:5000/api/config')
       .then(res => res.json())
       .then(setConfig);
+    
+    // Load startByDefault setting
+    fetch('http://localhost:5000/api/getStartByDefault')
+      .then(res => res.json())
+      .then(data => {
+        if (data.startByDefault) {
+          fetch('http://localhost:5000/api/presence/start', { method: 'POST' })
+            .then(() => showMessage('✅ Presence started by default'));
+        }
+      });
 
     // Load books
     fetch('http://localhost:5000/api/scraper/get_books')
@@ -90,6 +100,14 @@ function App() {
   const stopPresence = () => {
     fetch('http://localhost:5000/api/presence/stop', { method: 'POST' })
       .then(() => showMessage('🛑 Presence stopped'));
+  };
+
+  const exit = () => {
+    fetch('http://localhost:5000/shutdown', { method: 'POST' })
+      .then(() => {
+        showMessage('🛑 Exiting...');
+        setTimeout(() => window.close(), 2000);
+      });
   };
 
   if (!config) return <div style={{ padding: '20px' }}>Loading configuration...</div>;
@@ -165,6 +183,7 @@ function App() {
         <button className="btn" onClick={saveConfig}>Save Config</button>
         <button className="btn" onClick={startPresence}>Start</button>
         <button className="btn" onClick={stopPresence}>Stop</button>
+        <button className="btn" onClick={exit}>Exit</button>
       </div>
 
       <p style={{ marginTop: '10px' }}><strong>Status:</strong> {status}</p>

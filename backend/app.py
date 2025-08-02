@@ -24,7 +24,8 @@ DEFAULT_CONFIG = {
     "current_isbn": None,
     "minimizeToTray": True,
     "startOnStartup": False,
-    "update_interval": 60
+    "update_interval": 60,
+    "startByDefault": False
 }
 
 def load_config():
@@ -125,6 +126,10 @@ def thread():
 def pid():
     return jsonify({"pid": os.getpid()})
 
+@app.route("/api/getStartByDefault", methods=["GET"])
+def get_start_by_default():
+    return jsonify({"startByDefault": CONFIG.get("startByDefault", False)})
+
 #region Config
 @app.route("/api/config", methods=["GET"])
 def get_config():
@@ -193,8 +198,17 @@ def presence_initialize():
 
 @app.route("/api/presence/start", methods=["POST"])
 def presence_start():
-    global presenceThread
+    global presenceThread, should_run_event, is_running_event, init_event, current_book, books, current_isbn
     should_run_event.set()
+    books = get_books()
+    if not books:
+        return jsonify({"error": "No books found."}), 404
+    if not current_book:
+        current_book = next(iter(books.values()))
+        current_isbn = current_book["isbn"]
+        CONFIG["current_isbn"] = current_isbn
+        save_config_internal()
+    init_event.set()
     if presenceThread is None or not presenceThread.is_alive():
         presenceThread = threading.Thread(target=run_presence, daemon=True)
         presenceThread.start()
