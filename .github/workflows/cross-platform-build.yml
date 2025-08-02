@@ -28,7 +28,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install pyinstaller flask flask-cors
+        run: pip install -r backend/requirements.txt
 
       - name: Build Python binary
         run: pyinstaller backend/app.spec
@@ -100,7 +100,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install flask flask-cors
+        run: pip install -r backend/requirements.txt
 
       - name: Rebuild PyInstaller bootloader for x86_64
         run: |
@@ -185,7 +185,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install flask flask-cors
+        run: pip install -r backend/requirements.txt
 
       - name: Rebuild PyInstaller bootloader for arm64
         run: |
@@ -260,7 +260,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y python3 python3-pip
-          pip3 install pyinstaller flask flask-cors
+          pip3 install -r backend/requirements.txt
 
       - name: Build Python binary
         run: pyinstaller backend/app-linux.spec
