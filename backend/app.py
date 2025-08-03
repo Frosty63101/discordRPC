@@ -368,6 +368,13 @@ def presence_status():
 def get_custom_script():
     try:
         path = os.path.expanduser("~/.config/custom_scraper.py")
+        if os.path.exists(path):
+            log(f"Loading custom script from {path}")
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("# Custom scraper script\n# You can edit this file to customize your scraper.\n# This will replace the default scarper and presence loop.\n# Make sure to follow the correct Python syntax.\n")
+                log(f"Created new custom script at {path}")
         with open(path, "r") as f:
             return f.read(), 200
     except Exception as e:
@@ -378,6 +385,11 @@ def save_custom_script():
     try:
         content = request.data.decode("utf-8")
         path = os.path.expanduser("~/.config/custom_scraper.py")
+        if os.path.exists(path):
+            log(f"Saving custom script to {path}")
+        else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            log(f"Creating new custom script at {path}")
         with open(path, "w") as f:
             f.write(content)
         return jsonify({"message": "Saved"}), 200
