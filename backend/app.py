@@ -204,7 +204,7 @@ def save_config():
     CONFIG.update(updated_config)
     path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
     with open(path, "w") as f:
-        json.dump(CONFIG, f)
+        json.dump(CONFIG, f, indent=4)
     return jsonify({"message": "Config saved successfully."})
 
 @app.route("/api/book/select", methods=["POST"])
@@ -226,7 +226,7 @@ def save_config_internal():
     log("Internal save config called.")
     path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
     with open(path, "w") as f:
-        json.dump(CONFIG, f)
+        json.dump(CONFIG, f, indent=4)
 
 @app.route("/api/book/current", methods=["GET"])
 def get_current_book():

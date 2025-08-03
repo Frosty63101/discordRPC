@@ -221,6 +221,22 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();
     }
+    if (tray) tray.destroy();
+    if (splash) splash.destroy();
+    if (mainWindow) mainWindow.destroy();
+    if (flaskProcess) flaskProcess.kill();
+    flaskProcess = null;
+    mainWindow = null;
+    splash = null;
+    tray = null;
+    app.removeAllListeners('will-quit');
+    app.removeAllListeners('window-all-closed');
+    app.removeAllListeners('second-instance');
+    app.removeAllListeners('activate');
+    app.removeAllListeners('ready');
+    app.removeAllListeners('before-quit');
+    app.removeAllListeners('quit');
+    app.removeAllListeners('browser-window-created');
 });
 
 app.on('second-instance', () => {

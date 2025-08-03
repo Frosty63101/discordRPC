@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import './App.css';
 
 function App() {
   const [config, setConfig] = useState(null);
@@ -128,14 +129,22 @@ function App() {
       <input
         className="input"
         value={config.discord_app_id}
-        onChange={e => setConfig({ ...config, discord_app_id: e.target.value })}
+        onChange={e => {
+          setConfig({ ...config, discord_app_id: e.target.value });
+          saveConfig();
+          fetchStatus();
+        }}
       />
 
       <label>Goodreads User ID:</label>
       <input
         className="input"
         value={config.goodreads_id}
-        onChange={e => setConfig({ ...config, goodreads_id: e.target.value })}
+        onChange={e => {
+          setConfig({ ...config, goodreads_id: e.target.value });
+          saveConfig();
+          fetchStatus();
+        }}
       />
 
       <label>Update Interval (seconds):</label>
@@ -143,14 +152,22 @@ function App() {
         type="number"
         className="input"
         value={config.update_interval}
-        onChange={e => setConfig({ ...config, update_interval: parseInt(e.target.value) })}
+        onChange={e => {
+          setConfig({ ...config, update_interval: parseInt(e.target.value) });
+          saveConfig();
+          fetchStatus();
+        }}
       />
 
       <label>Currently Reading:</label>
       <select
         className="input"
         value={selectedISBN}
-        onChange={e => updateBook(e.target.value)}
+        onChange={e => {
+          updateBook(e.target.value);
+          saveConfig();
+          fetchStatus();
+        }}
       >
         {Object.entries(books).map(([isbn, book]) => (
           <option key={isbn} value={isbn}>
@@ -163,9 +180,11 @@ function App() {
         <input
           type="checkbox"
           checked={config.minimizeToTray}
-          onChange={e =>
-            setConfig({ ...config, minimizeToTray: e.target.checked })
-          }
+          onChange={e => {
+            setConfig({ ...config, minimizeToTray: e.target.checked });
+            saveConfig();
+            fetchStatus();
+          }}
         />
         {' '}Minimize to Tray
       </label>
@@ -178,7 +197,9 @@ function App() {
             setConfig({ ...config, startOnStartup: e.target.checked });
             const updated = e.target.checked;
             setConfig({ ...config, startOnStartup: updated });
+            saveConfig();
             fetch('http://localhost:5000/api/startup/enable', { method: 'POST' });
+            fetchStatus();
           }}
         />
         {' '}Start on Startup
@@ -196,31 +217,6 @@ function App() {
         <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>
       )}
 
-      <style>{`
-        .input {
-          width: 100%;
-          padding: 8px;
-          margin-bottom: 12px;
-          font-size: 16px;
-          border: 1px solid #ccc;
-          border-radius: 6px;
-          box-sizing: border-box;
-        }
-
-        .btn {
-          padding: 10px 14px;
-          font-size: 14px;
-          background: #007acc;
-          color: white;
-          border: none;
-          border-radius: 6px;
-          cursor: pointer;
-        }
-
-        .btn:hover {
-          background: #005fa3;
-        }
-      `}</style>
     </div>
   );
 }
