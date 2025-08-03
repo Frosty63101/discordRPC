@@ -7,20 +7,19 @@ function App() {
   const [selectedISBN, setSelectedISBN] = useState('');
   const [status, setStatus] = useState('');
   const [message, setMessage] = useState('');
+  const [customScript, setCustomScript] = useState('');
+  const [showEditor, setShowEditor] = useState(false);
   const intervalRef = useRef(null);
   const messageTimer = useRef(null);
 
   useEffect(() => {
-    // Prevent reinitialization in Electron
     if (window.__GOODREADS_RPC_INITIALIZED__) return;
     window.__GOODREADS_RPC_INITIALIZED__ = true;
 
-    // Load config
     fetch('http://localhost:5000/api/config')
       .then(res => res.json())
       .then(setConfig);
-    
-    // Load startByDefault setting
+
     fetch('http://localhost:5000/api/getStartByDefault')
       .then(res => res.json())
       .then(data => {
@@ -30,7 +29,6 @@ function App() {
         }
       });
 
-    // Load books
     fetch('http://localhost:5000/api/scraper/get_books')
       .then(res => res.json())
       .then(([bookData, current]) => {
@@ -38,7 +36,8 @@ function App() {
         setSelectedISBN(current);
       });
 
-    // Visibility-based status polling
+    fetchCustomScript();
+
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchStatus();
@@ -63,9 +62,7 @@ function App() {
     fetch('http://localhost:5000/api/status')
       .then(res => res.json())
       .then(data => {
-        const newStatus = Array.isArray(data.status)
-          ? data.status.join(', ')
-          : data.status;
+        const newStatus = Array.isArray(data.status) ? data.status.join(', ') : data.status;
         setStatus(newStatus);
       });
   };
@@ -113,110 +110,119 @@ function App() {
       });
   };
 
+  const fetchCustomScript = () => {
+    fetch('http://localhost:5000/api/custom_script')
+      .then(res => res.text())
+      .then(setCustomScript);
+  };
+
+  const saveCustomScript = () => {
+    fetch('http://localhost:5000/api/custom_script', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: customScript,
+    }).then(() => {
+      showMessage('✅ Custom script saved');
+      setShowEditor(false);
+    });
+  };
+
   if (!config) return <div style={{ padding: '20px' }}>Loading configuration...</div>;
 
   return (
-    <div style={{
-      padding: '24px',
-      maxWidth: '600px',
-      margin: '0 auto',
-      fontFamily: 'Segoe UI, sans-serif',
-      color: '#333',
-    }}>
+    <div style={{ padding: '24px', maxWidth: '800px', margin: '0 auto', fontFamily: 'Segoe UI, sans-serif', color: '#333' }}>
       <h1 style={{ marginBottom: '20px', color: '#444' }}>Goodreads Discord RPC</h1>
 
       <label>Discord App ID:</label>
-      <input
-        className="input"
-        value={config.discord_app_id}
-        onChange={e => {
-          setConfig({ ...config, discord_app_id: e.target.value });
-          saveConfig();
-          fetchStatus();
-        }}
-      />
+      <input className="input" value={config.discord_app_id} onChange={e => {
+        setConfig({ ...config, discord_app_id: e.target.value });
+        saveConfig();
+      }} />
 
       <label>Goodreads User ID:</label>
-      <input
-        className="input"
-        value={config.goodreads_id}
-        onChange={e => {
-          setConfig({ ...config, goodreads_id: e.target.value });
-          saveConfig();
-          fetchStatus();
-        }}
-      />
+      <input className="input" value={config.goodreads_id} onChange={e => {
+        setConfig({ ...config, goodreads_id: e.target.value });
+        saveConfig();
+      }} />
 
       <label>Update Interval (seconds):</label>
-      <input
-        type="number"
-        className="input"
-        value={config.update_interval}
-        onChange={e => {
-          setConfig({ ...config, update_interval: parseInt(e.target.value) });
-          saveConfig();
-          fetchStatus();
-        }}
-      />
+      <input type="number" className="input" value={config.update_interval} onChange={e => {
+        setConfig({ ...config, update_interval: parseInt(e.target.value) });
+        saveConfig();
+      }} />
 
       <label>Currently Reading:</label>
-      <select
-        className="input"
-        value={selectedISBN}
-        onChange={e => {
-          updateBook(e.target.value);
-          saveConfig();
-          fetchStatus();
-        }}
-      >
+      <select className="input" value={selectedISBN} onChange={e => {
+        updateBook(e.target.value);
+        saveConfig();
+      }}>
         {Object.entries(books).map(([isbn, book]) => (
-          <option key={isbn} value={isbn}>
-            {book.title} by {book.author}
-          </option>
+          <option key={isbn} value={isbn}>{book.title} by {book.author}</option>
         ))}
       </select>
 
       <label style={{ marginTop: '12px' }}>
-        <input
-          type="checkbox"
-          checked={config.minimizeToTray}
-          onChange={e => {
-            setConfig({ ...config, minimizeToTray: e.target.checked });
-            saveConfig();
-            fetchStatus();
-          }}
-        />
+        <input type="checkbox" checked={config.minimizeToTray} onChange={e => {
+          setConfig({ ...config, minimizeToTray: e.target.checked });
+          saveConfig();
+        }} />
         {' '}Minimize to Tray
       </label>
 
       <label>
-        <input
-          type="checkbox"
-          checked={config.startOnStartup}
-          onChange={e => {
-            setConfig({ ...config, startOnStartup: e.target.checked });
-            const updated = e.target.checked;
-            setConfig({ ...config, startOnStartup: updated });
-            saveConfig();
-            fetch('http://localhost:5000/api/startup/enable', { method: 'POST' });
-            fetchStatus();
-          }}
-        />
+        <input type="checkbox" checked={config.startOnStartup} onChange={e => {
+          setConfig({ ...config, startOnStartup: e.target.checked });
+          saveConfig();
+          fetch('http://localhost:5000/api/startup/enable', { method: 'POST' });
+        }} />
         {' '}Start on Startup
       </label>
+
+      <label>Presence Template (JSON):</label>
+      <textarea className="input" rows={6} value={JSON.stringify(config.presence_template, null, 2)} onChange={e => {
+        try {
+          setConfig({ ...config, presence_template: JSON.parse(e.target.value) });
+        } catch {}
+      }} />
+
+      <label>Custom Variables (JSON):</label>
+      <textarea className="input" rows={4} value={JSON.stringify(config.custom_vars, null, 2)} onChange={e => {
+        try {
+          setConfig({ ...config, custom_vars: JSON.parse(e.target.value) });
+        } catch {}
+      }} />
 
       <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
         <button className="btn" onClick={saveConfig}>Save Config</button>
         <button className="btn" onClick={startPresence}>Start</button>
         <button className="btn" onClick={stopPresence}>Stop</button>
         <button className="btn" onClick={exit}>Exit</button>
+        <button className="btn" onClick={() => setShowEditor(true)}>Edit custom_scraper.py</button>
       </div>
 
       <p style={{ marginTop: '10px' }}><strong>Status:</strong> {status}</p>
-      {message && (
-        <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>
-      )}
+      {message && <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>}
 
+      {showEditor && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100%',
+          height: '100%', backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div style={{ backgroundColor: '#fff', padding: '20px', width: '80%', height: '80%', overflow: 'auto' }}>
+            <h3>Edit custom_scraper.py</h3>
+            <textarea
+              value={customScript}
+              onChange={e => setCustomScript(e.target.value)}
+              style={{ width: '100%', height: '80%', fontFamily: 'monospace' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}>
+              <button className="btn" onClick={saveCustomScript}>Save Script</button>
+              <button className="btn" onClick={() => setShowEditor(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

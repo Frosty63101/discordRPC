@@ -8,6 +8,34 @@ import pypresence
 import re
 import requests
 from bs4 import BeautifulSoup
+import importlib.util
+import importlib.machinery
+import py_compile
+
+def load_or_compile_module(filePath, moduleName="custom_module"):
+    if not os.path.isfile(filePath):
+        log(f"[WARN] Custom module {filePath} not found.")
+        return None
+
+    try:
+        compiledPath = importlib.util.cache_from_source(filePath)
+        if not os.path.exists(compiledPath) or os.path.getmtime(compiledPath) < os.path.getmtime(filePath):
+            py_compile.compile(filePath, cfile=compiledPath)
+            log(f"[INFO] Compiled {filePath} to {compiledPath}")
+    except Exception as e:
+        log(f"[ERROR] Compilation failed: {e}")
+        return None
+
+    try:
+        loader = importlib.machinery.SourcelessFileLoader(moduleName, compiledPath)
+        spec = importlib.util.spec_from_loader(moduleName, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        log(f"[INFO] Loaded custom module from {compiledPath}")
+        return module
+    except Exception as e:
+        log(f"[ERROR] Failed to load module: {e}")
+        return None
 
 app = Flask(__name__)
 
@@ -25,8 +53,42 @@ DEFAULT_CONFIG = {
     "minimizeToTray": True,
     "startOnStartup": False,
     "update_interval": 60,
-    "startByDefault": False
+    "startByDefault": False,
+    "presence_template": {
+        "details": "{title}",
+        "state": "by {author}",
+        "large_image": "{coverArt}",
+        "large_text": "Reading via Goodreads",
+        "start": "{startTimestamp}",
+        "buttons": [{
+            "label": "View Goodreads",
+            "url": "https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
+        }]
+    },
+    "custom_vars": {
+        "username": "DefaultUser",
+        "appName": "GoodreadsRPC"
+    }
 }
+
+def resolve_template(template, context):
+    """
+    Recursively replaces placeholders in a dictionary, list, or string
+    using the given context dictionary.
+    """
+    if isinstance(template, dict):
+        return {k: resolve_template(v, context) for k, v in template.items()}
+    elif isinstance(template, list):
+        return [resolve_template(i, context) for i in template]
+    elif isinstance(template, str):
+        try:
+            return template.format(**context)
+        except KeyError as e:
+            log(f"[WARN] Missing template variable: {e}")
+            return template
+    else:
+        return template  # leave unchanged
+
 
 def log(message):
     try:
@@ -65,6 +127,10 @@ statusInfo = {
     "message": [None],
     "lastUpdated": [None]
 }
+
+customScraper = None
+custom_path = os.path.join(os.path.expanduser("~"), ".config", "custom_scraper.py")
+customScraper = load_or_compile_module(custom_path, "custom_scraper")
 
 @app.route("/api/startup/enable", methods=["POST"])
 def enable_startup():
@@ -134,7 +200,7 @@ def get_books():
 def scraper_get_books():
     global current_book, current_isbn
     global books
-    books = get_books()
+    books = customScraper.get_books() if customScraper and hasattr(customScraper, "get_books") else get_books()
     if books:
         log(f"Books fetched: {len(books)} found.")
         if current_isbn and current_isbn in books:
@@ -252,7 +318,8 @@ def presence_initialize():
     log("Presence initialize endpoint called.")
     global presenceThread
     if presenceThread is None:
-        presenceThread = threading.Thread(target=run_presence)
+        custom_run = getattr(customScraper, "run_presence", None)
+        presenceThread = threading.Thread(target=custom_run if callable(custom_run) else run_presence, daemon=True)
         presenceThread.start()
     return jsonify({"message": "Discord presence initialized."})
 
@@ -261,7 +328,7 @@ def presence_start():
     log("Presence start endpoint called.")
     global presenceThread, should_run_event, is_running_event, init_event, current_book, books, current_isbn
     should_run_event.set()
-    books = get_books()
+    books = customScraper.get_books() if customScraper and hasattr(customScraper, "get_books") else get_books()
     if not books:
         log("No books found.")
         return jsonify({"error": "No books found."}), 404
@@ -273,7 +340,8 @@ def presence_start():
     init_event.set()
     if presenceThread is None or not presenceThread.is_alive():
         log("Starting presence thread.")
-        presenceThread = threading.Thread(target=run_presence, daemon=True)
+        custom_run = getattr(customScraper, "run_presence", None)
+        presenceThread = threading.Thread(target=custom_run if callable(custom_run) else run_presence, daemon=True)
         presenceThread.start()
         return jsonify({"message": "Presence thread started."})
     else:
@@ -295,6 +363,26 @@ def presence_status():
         "initialized": init_event.is_set(),
         "thread_alive": presenceThread.is_alive() if presenceThread else False
     })
+
+@app.route("/api/custom_script", methods=["GET"])
+def get_custom_script():
+    try:
+        path = os.path.expanduser("~/.config/custom_scraper.py")
+        with open(path, "r") as f:
+            return f.read(), 200
+    except Exception as e:
+        return f"# Error loading file: {e}", 500
+
+@app.route("/api/custom_script", methods=["POST"])
+def save_custom_script():
+    try:
+        content = request.data.decode("utf-8")
+        path = os.path.expanduser("~/.config/custom_scraper.py")
+        with open(path, "w") as f:
+            f.write(content)
+        return jsonify({"message": "Saved"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def run_presence():
     global current_book, goodreads_id, is_running_event, should_run_event, init_event, statusInfo
@@ -327,17 +415,18 @@ def run_presence():
                 if current_book:
                     try:
                         log(f"Updating presence for book: {current_book['title']}")
-                        presence.update(
-                            details=current_book["title"],
-                            state=f"by {current_book['author'] or 'Unknown Author'}",
-                            large_image=current_book["coverArt"] or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png",
-                            large_text="Reading via Goodreads",
-                            start=int(time.mktime(time.strptime(current_book["startDate"], "%b %d, %Y"))) if current_book["startDate"] else None,
-                            buttons=[{
-                                "label": "View Goodreads",
-                                "url": f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
-                            }]
-                        )
+                        context = {
+                            "title": current_book.get("title"),
+                            "author": current_book.get("author"),
+                            "coverArt": current_book.get("coverArt"),
+                            "startDate": current_book.get("startDate"),
+                            "startTimestamp": int(time.mktime(time.strptime(current_book["startDate"], "%b %d, %Y"))) if current_book.get("startDate") else None,
+                            "isbn": current_book.get("isbn"),
+                            "goodreads_id": goodreads_id
+                        }
+                        context.update(CONFIG.get("custom_vars", {}))
+                        template = resolve_template(CONFIG.get("presence_template", {}), context)
+                        presence.update(**template)
                         statusInfo["status"].append("Active")
                         statusInfo["message"].append("Presence updated successfully.")
                     except Exception as e:
