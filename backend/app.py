@@ -4,7 +4,7 @@ import json
 import threading
 import signal
 import os
-import pypresence
+import sys
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -12,6 +12,9 @@ from bs4 import BeautifulSoup
 app = Flask(__name__)
 
 presenceThread = None
+statusLock = threading.Lock()
+configLock = threading.Lock()
+booksLock = threading.Lock()
 
 # Events
 init_event = threading.Event()
@@ -20,7 +23,7 @@ should_run_event = threading.Event()
 
 DEFAULT_CONFIG = {
     "goodreads_id": "your_goodreads_id_here",
-    "discord_app_id": "your_discord_app_id_here",
+    "discord_app_id": "1356666997760462859", 
     "current_isbn": None,
     "minimizeToTray": True,
     "startOnStartup": False,
@@ -30,356 +33,579 @@ DEFAULT_CONFIG = {
 
 def log(message):
     try:
-        log_path = os.path.join(os.path.expanduser("~"), ".config", "gr_rpc_log.txt")
-        with open(log_path, "a") as f:
+        logPath = os.path.join(os.path.expanduser("~"), ".config", "gr_rpc_log.txt")
+        os.makedirs(os.path.dirname(logPath), exist_ok=True)
+        with open(logPath, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
     except Exception:
         pass
 
+def updateStatus(status, message=None):
+    """Thread-safe status updater consumed by /api/status."""
+    ts = time.time()
+    with statusLock:
+        statusInfo["status"].append(status)
+        statusInfo["message"].append(message)
+        statusInfo["lastUpdated"].append(ts)
+
+def safeJsonifyError(e, code=500, where="unknown"):
+    msg = f"{type(e).__name__}: {e}"
+    log(f"[{where}] ERROR: {msg}")
+    updateStatus("Error", f"[{where}] {msg}")
+    return jsonify({"error": msg}), code
 
 def load_config():
     global CONFIG
-    # load from cross platform safe json config file stored somewhere in user directory
-    path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            CONFIG = json.load(f)
-        log(f"Config loaded from {path}")
-    else:
-        CONFIG = DEFAULT_CONFIG.copy()
-        with open(path, "w") as f:
-            json.dump(CONFIG, f)
-        log(f"Config created at {path}")
-
-    return CONFIG
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            changed = False
+            for k, v in DEFAULT_CONFIG.items():
+                if k not in cfg:
+                    cfg[k] = v
+                    changed = True
+            with configLock:
+                CONFIG = cfg
+            if changed:
+                save_config_internal()
+            log(f"Config loaded from {path}")
+        else:
+            with configLock:
+                CONFIG = DEFAULT_CONFIG.copy()
+            save_config_internal()
+            log(f"Config created at {path}")
+        return CONFIG
+    except Exception as e:
+        with configLock:
+            CONFIG = DEFAULT_CONFIG.copy()
+        updateStatus("Error", f"Failed to load config, using defaults: {e}")
+        log(f"Failed to load config, using defaults: {e}")
+        return CONFIG
 
 CONFIG = load_config()
 
-current_book = None
-current_isbn = CONFIG.get("current_isbn")
-goodreads_id = CONFIG.get("goodreads_id")
-discord_app_id = CONFIG.get("discord_app_id")
+currentBook = None
+currentIsbn = CONFIG.get("current_isbn")
+goodreadsId = CONFIG.get("goodreads_id")
 books = {}
+
 statusInfo = {
     "status": ["Idle"],
     "message": [None],
     "lastUpdated": [None]
 }
 
+@app.errorhandler(Exception)
+def handle_unhandled_error(e):
+    # Global safety net
+    return safeJsonifyError(e, code=500, where="GlobalHandler")
+
 @app.route("/api/startup/enable", methods=["POST"])
 def enable_startup():
     try:
+        updateStatus("Info", "Updating startup preference")
         log("Updating startup preference.")
         import platform
         if platform.system() != "Windows":
             return jsonify({"error": "Startup shortcut only supported on Windows"}), 400
-        from win32com.client import Dispatch
-        startup_dir = os.path.join(os.getenv('APPDATA'), "Microsoft\\Windows\\Start Menu\\Programs\\Startup")
-        shortcut_path = os.path.join(startup_dir, "GoodreadsRPC.lnk")
-        script_path = os.path.realpath(sys.argv[0])
+        try:
+            from win32com.client import Dispatch
+        except Exception as e:
+            return safeJsonifyError(e, 500, "enable_startup(win32com)")
+        startupDir = os.path.join(os.getenv('APPDATA'), "Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+        shortcutPath = os.path.join(startupDir, "GoodreadsRPC.lnk")
+        scriptPath = os.path.realpath(sys.argv[0])
 
-        if CONFIG.get("startOnStartup"):
+        startOnStartup = bool(CONFIG.get("startOnStartup"))
+        if startOnStartup:
             shell = Dispatch("WScript.Shell")
-            shortcut = shell.CreateShortCut(shortcut_path)
-            shortcut.Targetpath = script_path
-            shortcut.WorkingDirectory = os.path.dirname(script_path)
-            shortcut.IconLocation = script_path
+            shortcut = shell.CreateShortCut(shortcutPath)
+            shortcut.Targetpath = scriptPath
+            shortcut.WorkingDirectory = os.path.dirname(scriptPath)
+            shortcut.IconLocation = scriptPath
             shortcut.save()
+            updateStatus("Active", "Startup enabled")
         else:
-            if os.path.exists(shortcut_path):
-                os.remove(shortcut_path)
+            if os.path.exists(shortcutPath):
+                os.remove(shortcutPath)
+            updateStatus("Active", "Startup disabled")
         return jsonify({"message": "Startup preference updated."})
     except Exception as e:
-        log(f"Error updating startup preference: {e}")
-        return jsonify({"error": str(e)}), 500
+        return safeJsonifyError(e, 500, "enable_startup")
 
-#region scraper
-def get_books():
-    global current_book, goodreads_id
-    if goodreads_id:
-        url = f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
-    headers = {"User-Agent": "Mozilla/5.0"}
+# region scraper
+def sanitizeCover(url):
     try:
+        if not url:
+            return None
+        # remove size suffixes
+        return re.sub(r'\._[A-Z0-9]+_(?=\.(?:jpg|jpeg|png))', '', url, flags=re.IGNORECASE)
+    except Exception:
+        return url
+
+def safeText(node):
+    return node.get_text(strip=True) if node else None
+
+def get_books():
+    global goodreadsId
+    try:
+        if not goodreadsId:
+            updateStatus("Error", "Goodreads ID missing")
+            log("Goodreads ID missing in config.")
+            return None
+
+        url = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        updateStatus("Info", f"Fetching books from {url}")
         log(f"Fetching books from {url}")
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
-            log(f"Failed to fetch books: {response.status_code} {response.reason}")
+            msg = f"Failed to fetch books: {response.status_code} {response.reason}"
+            updateStatus("Error", msg)
+            log(msg)
             return None
+
         soup = BeautifulSoup(response.text, 'html.parser')
         bookTable = soup.find("table", {"id": "books"})
         if not bookTable:
+            updateStatus("Error", "No book table found")
             log("No book table found in the response.")
             return None
+
         rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
         if not rows:
+            updateStatus("Error", "No book rows found")
             log("No book rows found in the table.")
             return None
-        books = {}
+
+        found = {}
         for row in rows:
-            log("Processing book row.")
-            title = row.find("td", class_="field title").find("a").get_text(strip=True)
-            author = row.find("td", class_="field author").find("a").get_text(strip=True)
-            coverArt = row.find("td", class_="field cover").find("img")["src"]
-            coverArt = re.sub(r'\._[A-Z0-9]+_(?=\.(jpg|jpeg|png))', '', coverArt, flags=re.IGNORECASE)
-            startDateSpan = row.find("td", class_="field date_started").find("span", class_="date_started_value")
-            startDate = startDateSpan.get_text(strip=True) if startDateSpan else None
-            isbn = row.find("td", class_="field isbn").find("div", class_="value").get_text(strip=True) if row.find("td", class_="field isbn").find("div", class_="value").get_text(strip=True) else f"noisbn-{title}-{author}"
-            books[isbn] = { "isbn": isbn, "title": title, "author": author, "coverArt": coverArt, "startDate": startDate }
-        return books
+            try:
+                titleCell = row.find("td", class_="field title")
+                authorCell = row.find("td", class_="field author")
+                coverCell = row.find("td", class_="field cover")
+                dateCell = row.find("td", class_="field date_started")
+                isbnCell = row.find("td", class_="field isbn")
+
+                title = safeText(titleCell.find("a") if titleCell else None) or "Unknown Title"
+                author = safeText(authorCell.find("a") if authorCell else None) or "Unknown Author"
+                coverArt = sanitizeCover((coverCell.find("img")["src"] if coverCell and coverCell.find("img") else None))
+                startSpan = dateCell.find("span", class_="date_started_value") if dateCell else None
+                startDate = safeText(startSpan)
+
+                isbnVal = None
+                if isbnCell:
+                    valDiv = isbnCell.find("div", class_="value")
+                    txt = safeText(valDiv)
+                    if txt:
+                        isbnVal = txt
+
+                # Fallback key if isbn is missing
+                isbn = isbnVal if isbnVal else f"noisbn-{title}-{author}"
+
+                found[isbn] = {
+                    "isbn": isbn,
+                    "title": title,
+                    "author": author,
+                    "coverArt": coverArt,
+                    "startDate": startDate
+                }
+            except Exception as rowErr:
+                log(f"Failed to parse a book row: {rowErr}")
+                updateStatus("Error", f"Failed to parse a book row: {rowErr}")
+
+        if not found:
+            updateStatus("Error", "Parsed 0 books")
+            log("Parsed 0 books.")
+            return None
+
+        updateStatus("Active", f"Fetched {len(found)} books")
+        return found
     except Exception as e:
+        updateStatus("Error", f"Error fetching books: {e}")
         log(f"Error fetching books: {e}")
         return None
 
 @app.route("/api/scraper/get_books", methods=["GET"])
 def scraper_get_books():
-    global current_book, current_isbn
-    global books
-    books = get_books()
-    if books:
-        log(f"Books fetched: {len(books)} found.")
-        if current_isbn and current_isbn in books:
-            current_book = books[current_isbn]
-        else:
-            current_book = next(iter(books.values()))
-            current_isbn = current_book["isbn"]
-        init_event.set()
-        return jsonify(books, current_isbn), 200
-    else:
-        log("No books found.")
-        return jsonify({"error": "No books found."}), 404
+    try:
+        global currentBook, currentIsbn, books
+        with booksLock:
+            books = get_books()
+            if books:
+                log(f"Books fetched: {len(books)} found.")
+                # Keep selection if still valid otherwise pick first
+                if currentIsbn and currentIsbn in books:
+                    currentBook = books[currentIsbn]
+                else:
+                    currentBook = next(iter(books.values()))
+                    currentIsbn = currentBook["isbn"]
+                init_event.set()
+                updateStatus("Active", f"Books ready (current: {currentIsbn})")
+                return jsonify(books, currentIsbn), 200
+            else:
+                updateStatus("Error", "No books found")
+                log("No books found.")
+                return jsonify({"error": "No books found."}), 404
+    except Exception as e:
+        return safeJsonifyError(e, 500, "scraper_get_books")
 
-#region API Endpoints
+# region API Endpoints
 @app.route("/api/hello")
 def hello():
-    log("Hello endpoint called.")
-    return jsonify({"message": "Hello from Flask!"})
+    try:
+        log("Hello endpoint called.")
+        updateStatus("Info", "Hello ping")
+        return jsonify({"message": "Hello from Flask!"})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "hello")
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
-    log("Shutdown endpoint called.")
-    pid = os.getpid()
-    threading.Thread(target=lambda: os.kill(pid, signal.SIGTERM)).start()
-    return jsonify({"message": "Flask shutting down..."})
+    try:
+        log("Shutdown endpoint called.")
+        updateStatus("Info", "Shutdown requested")
+        pid = os.getpid()
+        threading.Thread(target=lambda: os.kill(pid, signal.SIGTERM), daemon=True).start()
+        return jsonify({"message": "Flask shutting down..."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "shutdown")
 
 @app.route("/status", methods=["GET"])
 def status():
-    log("Status endpoint called.")
-    return jsonify({"status": "Flask is running!"})
+    try:
+        log("Status endpoint called.")
+        updateStatus("Info", "Status polled")
+        return jsonify({"status": "Flask is running!"})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "status")
 
 @app.route("/api/thread", methods=["POST"])
 def thread():
-    log("Thread endpoint called.")
-    thread_id = threading.get_ident()
-    return jsonify({"thread_id": thread_id})
+    try:
+        log("Thread endpoint called.")
+        threadId = threading.get_ident()
+        updateStatus("Info", f"Thread ID reported: {threadId}")
+        return jsonify({"thread_id": threadId})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "thread")
 
 @app.route("/api/pid", methods=["GET"])
 def pid():
-    log("PID endpoint called.")
-    return jsonify({"pid": os.getpid()})
+    try:
+        log("PID endpoint called.")
+        updateStatus("Info", f"PID reported: {os.getpid()}")
+        return jsonify({"pid": os.getpid()})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "pid")
 
 @app.route("/api/getStartByDefault", methods=["GET"])
 def get_start_by_default():
-    log("Get start by default endpoint called.")
-    return jsonify({"startByDefault": CONFIG.get("startByDefault", False)})
+    try:
+        log("Get start by default endpoint called.")
+        val = bool(CONFIG.get("startByDefault", False))
+        updateStatus("Info", f"startByDefault={val}")
+        return jsonify({"startByDefault": val})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "get_start_by_default")
 
-#region Config
+# region Config
 @app.route("/api/config", methods=["GET"])
 def get_config():
-    log("Get config endpoint called.")
-    return jsonify(CONFIG)
+    try:
+        log("Get config endpoint called.")
+        with configLock:
+            cfg = dict(CONFIG)
+        updateStatus("Info", "Config served")
+        return jsonify(cfg)
+    except Exception as e:
+        return safeJsonifyError(e, 500, "get_config")
 
 @app.route("/api/config", methods=["POST"])
 def update_config():
-    log("Update config endpoint called.")
-    global CONFIG
-    data = request.json
-    CONFIG.update(data)
-    return jsonify({"message": "Config updated successfully."})
+    try:
+        log("Update config endpoint called.")
+        data = request.get_json(silent=True) or {}
+        with configLock:
+            CONFIG.update(data)
+        updateStatus("Active", "Config updated (unsaved)")
+        return jsonify({"message": "Config updated successfully."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "update_config")
 
 @app.route("/api/config/save", methods=["POST"])
 def save_config():
-    log("Save config endpoint called.")
-    global CONFIG
-    updated_config = request.json
-    CONFIG.update(updated_config)
-    path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
-    with open(path, "w") as f:
-        json.dump(CONFIG, f, indent=4)
-    return jsonify({"message": "Config saved successfully."})
+    try:
+        log("Save config endpoint called.")
+        updatedConfig = request.get_json(silent=True) or {}
+        with configLock:
+            CONFIG.update(updatedConfig)
+        save_config_internal()
+        updateStatus("Active", "Config saved")
+        return jsonify({"message": "Config saved successfully."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "save_config")
+
+def save_config_internal():
+    try:
+        log("Internal save config called.")
+        path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
+        with configLock:
+            cfg = CONFIG
+        tmpPath = path + ".tmp"
+        with open(tmpPath, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4)
+        os.replace(tmpPath, path)
+    except Exception as e:
+        updateStatus("Error", f"Failed to save config: {e}")
+        log(f"Failed to save config: {e}")
 
 @app.route("/api/book/select", methods=["POST"])
 def select_book():
-    log("Select book endpoint called.")
-    global current_isbn, current_book, books
-    data = request.json
-    isbn = data.get("isbn")
-    if isbn and isbn in books:
-        current_isbn = isbn
-        current_book = books[isbn]
-        CONFIG["current_isbn"] = isbn
-        save_config_internal()
-        return jsonify({"message": "Book selected."})
-    else:
-        return jsonify({"error": "Invalid ISBN."}), 400
-
-def save_config_internal():
-    log("Internal save config called.")
-    path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
-    with open(path, "w") as f:
-        json.dump(CONFIG, f, indent=4)
+    try:
+        log("Select book endpoint called.")
+        global currentIsbn, currentBook, books
+        data = request.get_json(silent=True) or {}
+        isbn = data.get("isbn")
+        with booksLock:
+            if isbn and isbn in books:
+                currentIsbn = isbn
+                currentBook = books[isbn]
+                with configLock:
+                    CONFIG["current_isbn"] = isbn
+                save_config_internal()
+                updateStatus("Active", f"Book selected: {isbn}")
+                return jsonify({"message": "Book selected."})
+            else:
+                updateStatus("Error", f"Invalid ISBN selection: {isbn}")
+                return jsonify({"error": "Invalid ISBN."}), 400
+    except Exception as e:
+        return safeJsonifyError(e, 500, "select_book")
 
 @app.route("/api/book/current", methods=["GET"])
 def get_current_book():
-    log("Get current book endpoint called.")
-    return jsonify(current_book)
+    try:
+        log("Get current book endpoint called.")
+        updateStatus("Info", "Current book requested")
+        return jsonify(currentBook)
+    except Exception as e:
+        return safeJsonifyError(e, 500, "get_current_book")
 
-#region Status
+# region Status
 @app.route("/api/status", methods=["GET"])
 def get_status():
-    log("Get status endpoint called.")
-    global statusInfo
-    tempStatusInfo = statusInfo.copy()
-    statusInfo = {
-        "status": ["Idle"],
-        "message": [None],
-        "lastUpdated": [None]
-    }
-    return jsonify(tempStatusInfo)
+    try:
+        log("Get status endpoint called.")
+        with statusLock:
+            tempStatusInfo = {
+                "status": list(statusInfo["status"]),
+                "message": list(statusInfo["message"]),
+                "lastUpdated": list(statusInfo["lastUpdated"])
+            }
+            statusInfo["status"].clear()
+            statusInfo["message"].clear()
+            statusInfo["lastUpdated"].clear()
+            statusInfo["status"].append("Idle")
+            statusInfo["message"].append(None)
+            statusInfo["lastUpdated"].append(None)
+        return jsonify(tempStatusInfo)
+    except Exception as e:
+        return safeJsonifyError(e, 500, "get_status")
 
-#region Presence
+# region Presence
 @app.route("/api/presence/initialize", methods=["POST"])
 def presence_initialize():
-    log("Presence initialize endpoint called.")
-    global presenceThread
-    if presenceThread is None:
-        presenceThread = threading.Thread(target=run_presence)
-        presenceThread.start()
-    return jsonify({"message": "Discord presence initialized."})
+    try:
+        log("Presence initialize endpoint called.")
+        global presenceThread
+        if presenceThread is None or not presenceThread.is_alive():
+            presenceThread = threading.Thread(target=run_presence, daemon=True, name="PresenceThread")
+            presenceThread.start()
+            updateStatus("Active", "Presence thread initialized")
+            return jsonify({"message": "Discord presence initialized."})
+        else:
+            updateStatus("Info", "Presence thread already initialized")
+            return jsonify({"message": "Discord presence already initialized."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "presence_initialize")
 
 @app.route("/api/presence/start", methods=["POST"])
 def presence_start():
-    log("Presence start endpoint called.")
-    global presenceThread, should_run_event, is_running_event, init_event, current_book, books, current_isbn
-    should_run_event.set()
-    books = get_books()
-    if not books:
-        log("No books found.")
-        return jsonify({"error": "No books found."}), 404
-    if not current_book:
-        current_book = next(iter(books.values()))
-        current_isbn = current_book["isbn"]
-        CONFIG["current_isbn"] = current_isbn
-        save_config_internal()
-    init_event.set()
-    if presenceThread is None or not presenceThread.is_alive():
-        log("Starting presence thread.")
-        presenceThread = threading.Thread(target=run_presence, daemon=True)
-        presenceThread.start()
-        return jsonify({"message": "Presence thread started."})
-    else:
-        return jsonify({"message": "Presence thread already running."})
-
+    try:
+        log("Presence start endpoint called.")
+        global presenceThread, currentBook, books, currentIsbn
+        should_run_event.set()
+        with booksLock:
+            scraped = get_books()
+            if not scraped:
+                updateStatus("Error", "No books found to start presence")
+                return jsonify({"error": "No books found."}), 404
+            books = scraped
+            if not currentBook:
+                currentBook = next(iter(books.values()))
+                currentIsbn = currentBook["isbn"]
+                with configLock:
+                    CONFIG["current_isbn"] = currentIsbn
+                save_config_internal()
+        init_event.set()
+        if presenceThread is None or not presenceThread.is_alive():
+            log("Starting presence thread.")
+            presenceThread = threading.Thread(target=run_presence, daemon=True, name="PresenceThread")
+            presenceThread.start()
+            updateStatus("Active", "Presence thread started")
+            return jsonify({"message": "Presence thread started."})
+        else:
+            updateStatus("Info", "Presence thread already running")
+            return jsonify({"message": "Presence thread already running."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "presence_start")
 
 @app.route("/api/presence/stop", methods=["POST"])
 def presence_stop():
-    log("Presence stop endpoint called.")
-    should_run_event.clear()
-    return jsonify({"message": "Presence loop stopped."})
+    try:
+        log("Presence stop endpoint called.")
+        should_run_event.clear()
+        updateStatus("Active", "Presence loop stop requested")
+        return jsonify({"message": "Presence loop stopped."})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "presence_stop")
 
 @app.route("/api/presence/status", methods=["GET"])
 def presence_status():
-    log("Presence status endpoint called.")
-    return jsonify({
-        "running": is_running_event.is_set(),
-        "should_run": should_run_event.is_set(),
-        "initialized": init_event.is_set(),
-        "thread_alive": presenceThread.is_alive() if presenceThread else False
-    })
+    try:
+        log("Presence status endpoint called.")
+        running = is_running_event.is_set()
+        shouldRun = should_run_event.is_set()
+        initialized = init_event.is_set()
+        threadAlive = presenceThread.is_alive() if presenceThread else False
+        updateStatus("Info", f"Presence status r:{running} s:{shouldRun} i:{initialized} t:{threadAlive}")
+        return jsonify({
+            "running": running,
+            "should_run": shouldRun,
+            "initialized": initialized,
+            "thread_alive": threadAlive
+        })
+    except Exception as e:
+        return safeJsonifyError(e, 500, "presence_status")
 
 def run_presence():
-    global current_book, goodreads_id, is_running_event, should_run_event, init_event, statusInfo
+    global currentBook, goodreadsId, is_running_event, should_run_event, init_event
     log("Presence thread started.")
     try:
         from pypresence import Presence
-    except ImportError:
-        log("pypresence not installed.")
+    except Exception as e:
+        updateStatus("Error", f"pypresence import failed: {e}")
+        log(f"pypresence not available: {e}")
         return
 
-    init_event.wait()  # wait for at least one book to be scraped
-    if not is_running_event.is_set():
-        discord_app_id = CONFIG.get("discord_app_id")
-        if not discord_app_id:
+    try:
+        init_event.wait(timeout=10)  # don't wait forever
+        if not init_event.is_set():
+            updateStatus("Error", "Presence init timed out")
+            log("Presence init_event wait timed out.")
+            return
+
+        discordAppId = None
+        with configLock:
+            discordAppId = CONFIG.get("discord_app_id")
+        if not discordAppId:
+            updateStatus("Error", "Discord App ID missing")
             log("Discord App ID missing from config.")
             return
 
-        presence = Presence(discord_app_id)
+        presence = Presence(discordAppId)
         try:
             presence.connect()
         except Exception as e:
+            updateStatus("Error", f"Discord connect failed: {e}")
             log(f"Failed to connect to Discord: {e}")
             return
 
         is_running_event.set()
+        updateStatus("Active", "Discord presence connected")
         log("Discord presence connected.")
 
         try:
             while should_run_event.is_set():
-                if current_book:
-                    try:
-                        log(f"Updating presence for book: {current_book['title']}")
+                try:
+                    book = currentBook
+                    if book:
+                        startTs = None
+                        try:
+                            if book.get("startDate"):
+                                startTs = int(time.mktime(time.strptime(book["startDate"], "%b %d, %Y")))
+                        except Exception:
+                            startTs = None
+
+                        largeImage = book.get("coverArt") or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png"
+
                         presence.update(
-                            details=current_book["title"],
-                            state=f"by {current_book['author'] or 'Unknown Author'}",
-                            large_image=current_book["coverArt"] or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png",
+                            details=book.get("title") or "Unknown Title",
+                            state=f"by {book.get('author') or 'Unknown Author'}",
+                            large_image=largeImage,
                             large_text="Reading via Goodreads",
-                            start=int(time.mktime(time.strptime(current_book["startDate"], "%b %d, %Y"))) if current_book["startDate"] else None,
+                            start=startTs,
                             buttons=[{
                                 "label": "View Goodreads",
-                                "url": f"https://www.goodreads.com/review/list/{goodreads_id}?shelf=currently-reading"
+                                "url": f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
                             }]
                         )
-                        statusInfo["status"].append("Active")
-                        statusInfo["message"].append("Presence updated successfully.")
-                    except Exception as e:
-                        log(f"Error updating presence: {e}")
-                        error = str(e)
-                        statusInfo["status"].append("Error")
-                        statusInfo["message"].append(error)
-                        statusInfo["lastUpdated"].append(time.time())
-
-                        try:
-                            log(f"Error updating presence: {error}")
-                            presence.clear()
-                            presence.close()
-                        except:
-                            log("Failed to clear presence.")
-
-                        # attempt reconnect
-                        try:
-                            log(f"Reconnecting presence due to error: {error}")
-                            presence = Presence(discord_app_id)
-                            presence.connect()
-                        except Exception as reconnectError:
-                            log(f"Reconnect failed: {reconnectError}")
-                            statusInfo["status"].append("Error")
-                            statusInfo["message"].append(f"Reconnect failed: {reconnectError}")
-                            statusInfo["lastUpdated"].append(time.time())
-                            time.sleep(10)
-                            continue
-                time.sleep(CONFIG.get("update_interval", 15))
+                        updateStatus("Active", f"Presence updated for '{book.get('title')}'")
+                    else:
+                        updateStatus("Info", "No current book to update")
+                    interval = 15
+                    try:
+                        with configLock:
+                            interval = int(CONFIG.get("update_interval", 15)) or 15
+                    except Exception:
+                        interval = 15
+                    time.sleep(max(5, min(600, interval)))
+                except Exception as loopErr:
+                    error = str(loopErr)
+                    updateStatus("Error", f"Presence loop error: {error}")
+                    log(f"Error updating presence: {error}")
+                    # Try to clear and reconnect
+                    try:
+                        presence.clear()
+                        presence.close()
+                    except Exception as clearErr:
+                        log(f"Failed to clear presence: {clearErr}")
+                    # attempt reconnect
+                    try:
+                        presence = Presence(discordAppId)
+                        presence.connect()
+                        updateStatus("Active", "Presence reconnected")
+                    except Exception as reconnectErr:
+                        updateStatus("Error", f"Reconnect failed: {reconnectErr}")
+                        log(f"Reconnect failed: {reconnectErr}")
+                        time.sleep(10)
+                        # keep loop alive; don't crash
+                        continue
         finally:
             log("Presence loop exiting.")
             is_running_event.clear()
             try:
-                log("Clearing presence on exit.")
                 presence.clear()
                 presence.close()
-            except:
-                log("Failed to clear presence on exit.")
-                pass
+                updateStatus("Info", "Presence cleared on exit")
+            except Exception as e:
+                log(f"Failed to clear presence on exit: {e}")
+                updateStatus("Error", f"Failed to clear presence on exit: {e}")
+    except Exception as e:
+        # Absolutely never let presence thread crash the process
+        log(f"Presence thread fatal: {e}")
+        updateStatus("Error", f"Presence fatal: {e}")
+        is_running_event.clear()
 
 def run():
-    app.run(host="localhost", port=5000)
+    try:
+        app.run(host="localhost", port=5000)
+    except Exception as e:
+        log(f"Flask runtime error: {e}")
+        updateStatus("Error", f"Flask runtime error: {e}")
 
 if __name__ == "__main__":
     run()

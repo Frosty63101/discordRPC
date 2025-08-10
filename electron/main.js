@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, Tray, Menu } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 
@@ -8,21 +8,31 @@ let flaskProcess = null;
 let splash = null;
 let mainWindow = null;
 let tray = null;
+let isQuitting = false;
+let backendReady = false;
 
-// Only allow one instance
+// --- single instance guard ---
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
     app.quit();
 }
-
-const { ipcMain } = require('electron');
-
-ipcMain.on('force-quit', () => {
-    shutdown();
-    app.quit();
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    }
 });
 
-// Check Rosetta (macOS)
+// --- crash guards ---
+process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
+});
+
+// --- Rosetta check (mac) ---
 let rosettaAvailable = null;
 function isRosettaInstalled() {
     if (rosettaAvailable !== null) return rosettaAvailable;
@@ -35,12 +45,12 @@ function isRosettaInstalled() {
     return rosettaAvailable;
 }
 
-// Determine binary path
+// --- resolve backend ---
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
 
     if (process.platform === 'win32') {
-        return { binaryPath: path.join(base, 'app', 'app', 'app.exe'), archPrefix: null };
+        return { binaryPath: path.join(base, 'app', 'app', 'app.exe'), launcher: null, args: [] };
     }
 
     if (process.platform === 'darwin') {
@@ -49,199 +59,292 @@ function getFlaskBinary() {
         const arch = process.arch;
 
         if (arch === 'arm64') {
-            if (fs.existsSync(armPath)) return { binaryPath: armPath, archPrefix: null };
-            if (fs.existsSync(x64Path) && isRosettaInstalled()) return { binaryPath: x64Path, archPrefix: 'arch' };
+            if (fs.existsSync(armPath)) return { binaryPath: armPath, launcher: null, args: [] };
+            if (fs.existsSync(x64Path) && isRosettaInstalled()) {
+                return { binaryPath: x64Path, launcher: 'arch', args: ['-x86_64', x64Path] };
+            }
         }
-
-        if (fs.existsSync(x64Path)) return { binaryPath: x64Path, archPrefix: null };
+        if (fs.existsSync(x64Path)) return { binaryPath: x64Path, launcher: null, args: [] };
         throw new Error(`No valid macOS binary found for architecture: ${arch}`);
     }
 
     if (process.platform === 'linux') {
-        return { binaryPath: path.join(base, 'app-linux', 'app_linux_bin'), archPrefix: null };
+        return { binaryPath: path.join(base, 'app-linux', 'app_linux_bin'), launcher: null, args: [] };
     }
 
     throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
-// Load JSON config from user dir
+// --- load config from user dir for minimizeToTray on first boot ---
 function loadLocalConfig() {
-    const home = process.env[process.platform === "win32" ? "USERPROFILE" : "HOME"];
-    const configPath = path.join(home, ".config", "app_config.json");
-    if (fs.existsSync(configPath)) {
-        try {
-            return JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        } catch (e) {
-            console.error("Failed to parse config:", e);
+    try {
+        const home = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME'];
+        const configPath = path.join(home, '.config', 'app_config.json');
+        if (fs.existsSync(configPath)) {
+            return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         }
+    } catch (e) {
+        console.error('Failed to parse local config:', e);
     }
     return {};
 }
-const config = loadLocalConfig();
+const localConfig = loadLocalConfig();
 
-// Start the app
-app.whenReady().then(() => {
-    createSplash();
-
-    const { binaryPath, archPrefix } = getFlaskBinary();
-    if (!fs.existsSync(binaryPath)) {
-        splash.loadURL(`data:text/html,<h1>Backend not found</h1><p>${binaryPath}</p>`);
-        return setTimeout(() => app.quit(), 5000);
+// --- app lifecycle ---
+app.whenReady().then(async () => {
+    try {
+        createSplash();
+        await launchBackendWithRetries(); // keep app alive; no auto-quit
+        await waitForFlask();
+        backendReady = true;
+        createMainWindow();
+    } catch (err) {
+        // Don’t die — show actionable error and keep tray so user can Quit
+        console.error('Backend failed to come online:', err);
+        showSplashError(err);
+        setupTray(); // allow user to quit from tray
     }
-
-    const args = archPrefix === 'arch' ? ['-x86_64', binaryPath] : [binaryPath];
-
-    flaskProcess = spawn(archPrefix || args[0], archPrefix ? args.slice(1) : [], {
-        shell: true,
-        stdio: 'inherit',
-        windowsHide: true
-    });
-
-    flaskProcess.on('error', err => {
-        console.error("Flask failed:", err);
-        const msg = archPrefix
-            ? `<h1>Rosetta 2 Required</h1><p>Run: <code>softwareupdate --install-rosetta</code></p>`
-            : "<h1>Flask failed to start</h1>";
-        splash.loadURL(`data:text/html,${encodeURIComponent(msg)}`);
-        setTimeout(() => app.quit(), 6000);
-    });
-
-    waitForFlask()
-        .then(() => {
-            createMainWindow();
-        })
-        .catch(err => {
-            console.error("Flask never came online:", err);
-            splash.loadURL(`data:text/html,<h1>Backend failed</h1><p>${err.message}</p>`);
-            setTimeout(() => app.quit(), 5000);
-        });
 });
 
+// --- splash ---
 function createSplash() {
-    splash = new BrowserWindow({
-        width: 400,
-        height: 300,
-        frame: false,
-        alwaysOnTop: true,
-        resizable: false,
-        show: false,
-    });
-    splash.loadFile(path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html'));
-    splash.once('ready-to-show', () => splash.show());
+    try {
+        splash = new BrowserWindow({
+            width: 420,
+            height: 320,
+            frame: false,
+            alwaysOnTop: true,
+            resizable: false,
+            show: false,
+        });
+        const splashPath = path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html');
+        if (fs.existsSync(splashPath)) {
+            splash.loadFile(splashPath);
+        } else {
+            splash.loadURL('data:text/html,<h2>Starting…</h2>');
+        }
+        splash.once('ready-to-show', () => splash.show());
+    } catch (e) {
+        console.error('Failed to create splash:', e);
+    }
 }
 
-function waitForFlask(retries = 50) {
+function showSplashError(err) {
+    const html = `
+        <h1>Backend failed to start</h1>
+        <pre>${(err && err.message) ? err.message : String(err)}</pre>
+        <p>Check logs or try again.</p>
+        <button onclick="location.reload()">Retry</button>
+    `;
+    try {
+        splash.loadURL(`data:text/html,${encodeURIComponent(html)}`);
+    } catch {
+        // ignore
+    }
+}
+
+// --- backend launch with retries (never auto-quit) ---
+async function launchBackendWithRetries(maxAttempts = 3) {
+    const { binaryPath, launcher, args } = getFlaskBinary();
+    if (!fs.existsSync(binaryPath) && !launcher) {
+        throw new Error(`Backend not found at ${binaryPath}`);
+    }
+
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+        attempt++;
+        try {
+            await launchBackendOnce(launcher, binaryPath, args);
+            return;
+        } catch (e) {
+            console.error(`Backend launch attempt ${attempt} failed:`, e);
+            await delay(1500);
+        }
+    }
+    throw new Error(`Backend failed after ${maxAttempts} attempts.`);
+}
+
+function launchBackendOnce(launcher, binaryPath, args) {
     return new Promise((resolve, reject) => {
-        const interval = setInterval(() => {
-            console.log(`Waiting for Flask... (${retries} retries left)`);
-            http.get('http://localhost:5000/api/hello', res => {
-                if (res.statusCode === 200) {
-                    clearInterval(interval);
+        try {
+            const cmd = launcher || binaryPath;
+            const finalArgs = launcher ? args : [];
+
+            flaskProcess = spawn(cmd, finalArgs, {
+                shell: process.platform === 'win32',
+                stdio: 'ignore',
+                windowsHide: true,
+                detached: false
+            });
+
+            let failedEarly = false;
+
+            flaskProcess.on('error', (err) => {
+                failedEarly = true;
+                reject(err);
+            });
+
+            // Give it a short moment to see if it kills itself or not
+            setTimeout(() => {
+                if (!failedEarly && flaskProcess && !flaskProcess.killed) {
                     resolve();
                 }
+            }, 400);
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+function waitForFlask(retries = 75) {
+    return new Promise((resolve, reject) => {
+        const tryOnce = () => {
+            http.get('http://localhost:5000/api/hello', (res) => {
+                if (res.statusCode === 200) return resolve();
+                if (--retries <= 0) return reject(new Error(`Flask responded with ${res.statusCode}`));
+                setTimeout(tryOnce, 250);
             }).on('error', () => {
-                if (--retries <= 0) {
-                    clearInterval(interval);
-                    reject(new Error("Flask failed to respond"));
-                }
+                if (--retries <= 0) return reject(new Error('Flask failed to respond'));
+                setTimeout(tryOnce, 250);
             });
-        }, 200);
+        };
+        tryOnce();
     });
 }
 
 function createMainWindow() {
-    mainWindow = new BrowserWindow({
-        width: 800,
-        height: 600,
-        show: false,
-        webPreferences: { nodeIntegration: false }
-    });
+    try {
+        mainWindow = new BrowserWindow({
+            width: 900,
+            height: 680,
+            show: false,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true
+            }
+        });
 
-    mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
+        mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
 
-    mainWindow.once('ready-to-show', () => {
-        if (splash) splash.close();
-        mainWindow.show();
-    });
+        mainWindow.once('ready-to-show', () => {
+            if (splash && !splash.isDestroyed()) splash.close();
+            splash = null;
+            mainWindow.show();
+        });
 
-    mainWindow.on('close', (e) => {
-        if (config.minimizeToTray) {
-            e.preventDefault();
-            mainWindow.hide();
-        } else {
-            // Fully exit
-            shutdown();
-            app.quit();
-        }
-    });
+        mainWindow.on('close', (e) => {
+            if (isQuitting) return; 
+            if (localConfig.minimizeToTray) {
+                e.preventDefault();
+                mainWindow.hide();
+                if (!tray) setupTray();
+            } else {
+                e.preventDefault();
+                isQuitting = true;
+                gracefulShutdown().finally(() => app.quit());
+            }
+        });
 
-    setupTray();
+        setupTray();
+    } catch (e) {
+        console.error('Failed to create main window:', e);
+        if (splash && !splash.isDestroyed()) showSplashError(e);
+    }
 }
 
 function setupTray() {
-    let trayIcon = path.join(__dirname, 'iconTemplate.png');
-    if (!fs.existsSync(trayIcon)) trayIcon = undefined;
+    try {
+        if (tray) return;
+        let trayIcon = path.join(__dirname, 'iconTemplate.png');
+        if (!fs.existsSync(trayIcon)) trayIcon = undefined;
 
-    tray = new Tray(trayIcon);
-    const contextMenu = Menu.buildFromTemplate([
-        { label: 'Show App', click: () => mainWindow.show() },
-        { label: 'Quit', click: () => { shutdown(); app.quit(); } }
-    ]);
-    tray.setToolTip('Goodreads Discord RPC');
-    tray.setContextMenu(contextMenu);
-    tray.on('double-click', () => mainWindow.show());
+        tray = new Tray(trayIcon);
+        const menu = Menu.buildFromTemplate([
+            { label: 'Show App', click: () => { if (mainWindow) mainWindow.show(); } },
+            { type: 'separator' },
+            { label: 'Quit', click: () => { isQuitting = true; gracefulShutdown().finally(() => app.quit()); } }
+        ]);
+        tray.setToolTip('Goodreads Discord RPC');
+        tray.setContextMenu(menu);
+        tray.on('double-click', () => { if (mainWindow) mainWindow.show(); });
+    } catch (e) {
+        console.error('Failed to setup tray:', e);
+    }
 }
 
-function shutdown() {
-    if (flaskProcess) {
-        const req = http.request({
+ipcMain.on('force-quit', () => {
+    isQuitting = true;
+    gracefulShutdown().finally(() => app.quit());
+});
+
+function gracefulShutdown() {
+    return new Promise((resolve) => {
+        const done = () => {
+            try { if (tray) tray.destroy(); } catch {}
+            tray = null;
+            resolve();
+        };
+
+        // Ask nicely
+        const shutdownReq = http.request({
             hostname: 'localhost',
             port: 5000,
             path: '/shutdown',
-            method: 'POST'
-        }, res => {
+            method: 'POST',
+            timeout: 2000
+        }, (res) => {
             console.log(`Flask shutdown response: ${res.statusCode}`);
+            // kill it with fire if it doesn't respond
+            setTimeout(() => {
+                tryKillBackend();
+                done();
+            }, 500);
         });
 
-        req.on('error', (err) => {
-            console.error("Flask shutdown failed:", err);
-            flaskProcess.kill();
+        shutdownReq.on('error', () => {
+            // If kill it with more fire
+            tryKillBackend();
+            done();
         });
 
-        req.end();
+        try { shutdownReq.end(); } catch { tryKillBackend(); done(); }
+    });
+}
+
+function tryKillBackend() {
+    try {
+        if (flaskProcess && !flaskProcess.killed) {
+            if (process.platform === 'win32') {
+                flaskProcess.kill('SIGTERM');
+            } else {
+                flaskProcess.kill('SIGTERM');
+            }
+        }
+    } catch (e) {
+        console.error('Error killing backend:', e);
+    } finally {
         flaskProcess = null;
     }
 }
 
-// Handle graceful exits
-app.on('will-quit', shutdown);
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 app.on('window-all-closed', () => {
-    // This ensures full shutdown on Linux/Windows
     if (process.platform !== 'darwin') {
-        app.quit();
+        if (!localConfig.minimizeToTray) {
+            isQuitting = true;
+            gracefulShutdown().finally(() => app.quit());
+        }
     }
-    if (tray) tray.destroy();
-    if (splash) splash.destroy();
-    if (mainWindow) mainWindow.destroy();
-    if (flaskProcess) flaskProcess.kill();
-    flaskProcess = null;
-    mainWindow = null;
-    splash = null;
-    tray = null;
-    app.removeAllListeners('will-quit');
-    app.removeAllListeners('window-all-closed');
-    app.removeAllListeners('second-instance');
-    app.removeAllListeners('activate');
-    app.removeAllListeners('ready');
-    app.removeAllListeners('before-quit');
-    app.removeAllListeners('quit');
-    app.removeAllListeners('browser-window-created');
 });
 
-app.on('second-instance', () => {
+app.on('before-quit', () => { isQuitting = true; });
+
+app.on('activate', () => {
     if (mainWindow) {
         mainWindow.show();
-        mainWindow.focus();
+    } else if (backendReady) {
+        createMainWindow();
     }
 });
