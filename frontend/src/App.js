@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import './App.css';
 
 function App() {
@@ -10,32 +10,47 @@ function App() {
     const intervalRef = useRef(null);
     const messageTimer = useRef(null);
 
+    const fetchStatus = useCallback(() => {
+        fetch('http://localhost:5000/api/status')
+            .then(res => res.json())
+            .then(data => {
+                const newStatus = Array.isArray(data.status)
+                    ? data.status.join(', ')
+                    : data.status;
+                setStatus(newStatus || '');
+            })
+            .catch(() => {
+            });
+    }, []); 
+
     useEffect(() => {
         if (window.__GOODREADS_RPC_INITIALIZED__) return;
         window.__GOODREADS_RPC_INITIALIZED__ = true;
 
         // Load config
-        safeFetchJSON('http://localhost:5000/api/config').then((cfg) => {
-            if (cfg) setConfig(cfg);
-        });
+        fetch('http://localhost:5000/api/config')
+            .then(res => res.json())
+            .then(setConfig)
+            .catch(() => {});
 
-        // startByDefault
-        safeFetchJSON('http://localhost:5000/api/getStartByDefault').then((data) => {
-            if (data?.startByDefault) {
-                fetch('http://localhost:5000/api/presence/start', { method: 'POST' })
-                    .then(() => showMessage('Presence started by default'))
-                    .catch(() => {});
-            }
-        });
+        fetch('http://localhost:5000/api/getStartByDefault')
+            .then(res => res.json())
+            .then(data => {
+                if (data.startByDefault) {
+                    fetch('http://localhost:5000/api/presence/start', { method: 'POST' })
+                        .then(() => showMessage('✅ Presence started by default'))
+                        .catch(() => {});
+                }
+            })
+            .catch(() => {});
 
-        // books
-        safeFetchJSON('http://localhost:5000/api/scraper/get_books').then((two) => {
-            if (two && Array.isArray(two) && two.length === 2) {
-                const [bookData, current] = two;
+        fetch('http://localhost:5000/api/scraper/get_books')
+            .then(res => res.json())
+            .then(([bookData, current]) => {
                 setBooks(bookData || {});
                 setSelectedISBN(current || '');
-            }
-        });
+            })
+            .catch(() => {});
 
         // status polling (not in background)
         const handleVisibility = () => {
@@ -56,29 +71,12 @@ function App() {
             document.removeEventListener('visibilitychange', handleVisibility);
             clearTimeout(messageTimer.current);
         };
-    }, []);
+    }, [fetchStatus]);
 
-    async function safeFetchJSON(url, init) {
-        try {
-            const res = await fetch(url, init);
-            if (!res.ok) return null;
-            return await res.json();
-        } catch {
-            return null;
-        }
-    }
-
-    const fetchStatus = async () => {
-        const data = await safeFetchJSON('http://localhost:5000/api/status');
-        if (!data) return;
-        const newStatus = Array.isArray(data.status) ? data.status.filter(Boolean).join(', ') : data.status;
-        setStatus(newStatus || '');
-    };
-
-    const showMessage = (msg) => {
+    const showMessage = msg => {
         setMessage(msg);
         clearTimeout(messageTimer.current);
-        messageTimer.current = setTimeout(() => setMessage(''), 2500);
+        messageTimer.current = setTimeout(() => setMessage(''), 3000);
     };
 
     const saveConfig = () => {
@@ -87,44 +85,47 @@ function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(config),
-        }).then(() => {
-            showMessage('Config saved');
-            fetchStatus();
-        }).catch(() => {});
+        })
+            .then(() => showMessage('✅ Config saved'))
+            .then(fetchStatus)
+            .catch(() => {});
     };
 
-    const updateBook = (isbn) => {
+    const updateBook = isbn => {
         setSelectedISBN(isbn);
         fetch('http://localhost:5000/api/book/select', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ isbn }),
-        }).then(() => {
-            showMessage('Book updated');
-            fetchStatus();
-        }).catch(() => {});
+        })
+            .then(() => showMessage('✅ Book updated'))
+            .then(fetchStatus)
+            .catch(() => {});
     };
 
     const startPresence = () => {
         fetch('http://localhost:5000/api/presence/start', { method: 'POST' })
-            .then(() => { showMessage('Presence started'); fetchStatus(); })
+            .then(() => showMessage('✅ Presence started'))
+            .then(fetchStatus)
             .catch(() => {});
     };
 
     const stopPresence = () => {
         fetch('http://localhost:5000/api/presence/stop', { method: 'POST' })
-            .then(() => { showMessage('Presence stopped'); fetchStatus(); })
+            .then(() => showMessage('🛑 Presence stopped'))
+            .then(fetchStatus)
             .catch(() => {});
     };
 
-    const exit = async () => {
-        try {
-            await fetch('http://localhost:5000/shutdown', { method: 'POST' });
-        } catch {}
-        showMessage('Exiting…');
-        setTimeout(() => {
-            window.electron?.ipcRenderer?.send('force-quit');
-        }, 500);
+    const exit = () => {
+        fetch('http://localhost:5000/shutdown', { method: 'POST' })
+            .catch(() => {})
+            .finally(() => {
+                showMessage('🛑 Exiting...');
+                setTimeout(() => {
+                    window.electron?.ipcRenderer?.send('force-quit');
+                }, 2000);
+            });
     };
 
     if (!config) return <div style={{ padding: '20px' }}>Loading configuration...</div>;
@@ -132,7 +133,7 @@ function App() {
     return (
         <div style={{
             padding: '24px',
-            maxWidth: '640px',
+            maxWidth: '600px',
             margin: '0 auto',
             fontFamily: 'Segoe UI, sans-serif',
             color: '#333',
@@ -143,16 +144,22 @@ function App() {
             <input
                 className="input"
                 value={config.discord_app_id || ''}
-                onChange={e => setConfig({ ...config, discord_app_id: e.target.value })}
-                onBlur={saveConfig}
+                onChange={e => {
+                    setConfig({ ...config, discord_app_id: e.target.value });
+                    saveConfig();
+                    fetchStatus();
+                }}
             />
 
             <label>Goodreads User ID:</label>
             <input
                 className="input"
                 value={config.goodreads_id || ''}
-                onChange={e => setConfig({ ...config, goodreads_id: e.target.value })}
-                onBlur={saveConfig}
+                onChange={e => {
+                    setConfig({ ...config, goodreads_id: e.target.value });
+                    saveConfig();
+                    fetchStatus();
+                }}
             />
 
             <label>Update Interval (seconds):</label>
@@ -160,8 +167,12 @@ function App() {
                 type="number"
                 className="input"
                 value={config.update_interval ?? 60}
-                onChange={e => setConfig({ ...config, update_interval: parseInt(e.target.value || '60', 10) })}
-                onBlur={saveConfig}
+                onChange={e => {
+                    const val = parseInt(e.target.value, 10);
+                    setConfig({ ...config, update_interval: Number.isNaN(val) ? 60 : val });
+                    saveConfig();
+                    fetchStatus();
+                }}
             />
 
             <label>Currently Reading:</label>
@@ -170,6 +181,8 @@ function App() {
                 value={selectedISBN}
                 onChange={e => {
                     updateBook(e.target.value);
+                    saveConfig();
+                    fetchStatus();
                 }}
             >
                 {Object.entries(books).map(([isbn, book]) => (
@@ -186,13 +199,11 @@ function App() {
                     onChange={e => {
                         const updated = { ...config, minimizeToTray: e.target.checked };
                         setConfig(updated);
-                        fetch('http://localhost:5000/api/config/save', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(updated),
-                        }).finally(fetchStatus);
+                        saveConfig();
+                        fetchStatus();
                     }}
-                /> {' '}Minimize to Tray
+                />
+                {' '}Minimize to Tray
             </label>
 
             <label>
@@ -202,16 +213,12 @@ function App() {
                     onChange={e => {
                         const updated = { ...config, startOnStartup: e.target.checked };
                         setConfig(updated);
-                        fetch('http://localhost:5000/api/config/save', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(updated),
-                        }).then(() => {
-                            fetch('http://localhost:5000/api/startup/enable', { method: 'POST' }).catch(() => {});
-                            fetchStatus();
-                        });
+                        saveConfig();
+                        fetch('http://localhost:5000/api/startup/enable', { method: 'POST' }).catch(() => {});
+                        fetchStatus();
                     }}
-                /> {' '}Start on Startup
+                />
+                {' '}Start on Startup
             </label>
 
             <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
@@ -222,7 +229,9 @@ function App() {
             </div>
 
             <p style={{ marginTop: '10px' }}><strong>Status:</strong> {status}</p>
-            {message && <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>}
+            {message && (
+                <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>
+            )}
         </div>
     );
 }
