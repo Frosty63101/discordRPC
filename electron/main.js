@@ -87,58 +87,112 @@ function makeSvg({ template = false }) {
     if (template) {
         return `
             <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-                <rect x="1" y="1" width="20" height="20" rx="5" ry="5" fill="black"/>
-                <text x="50%" y="57%" text-anchor="middle" font-size="11" font-weight="700"
-                            font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif"
-                            fill="white">G</text>
+                <!-- Open book silhouette: two halves + page flares -->
+                <!-- Left book block -->
+                <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="black"/>
+                <!-- Right book block (mirror) -->
+                <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="black"/>
+                <!-- Spine thickness -->
+                <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="black"/>
+                <!-- Page flares up (left) -->
+                <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="black"/>
+                <!-- Page flares up (right) -->
+                <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="black"/>
             </svg>
         `;
     }
+
     return `
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
             <defs>
-                <linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
+                <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
                     <stop offset="0%" stop-color="#2563eb"/>
                     <stop offset="100%" stop-color="#1d4ed8"/>
                 </linearGradient>
+                <linearGradient id="coverL" x1="1" y1="1" x2="11" y2="17" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stop-color="#3b82f6"/>
+                    <stop offset="100%" stop-color="#1d4ed8"/>
+                </linearGradient>
+                <linearGradient id="coverR" x1="21" y1="1" x2="11" y2="17" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stop-color="#3b82f6"/>
+                    <stop offset="100%" stop-color="#1d4ed8"/>
+                </linearGradient>
             </defs>
-            <rect x="1" y="1" width="20" height="20" rx="5" ry="5" fill="url(#g)"/>
-            <text x="50%" y="57%" text-anchor="middle" font-size="11" font-weight="700"
-                        font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif"
-                        fill="white">G</text>
+
+            <!-- Rounded background for legibility on mixed trays -->
+            <rect x="1" y="1" width="20" height="20" rx="5" ry="5" fill="url(#bg)"/>
+
+            <!-- Pages (light) -->
+            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
+            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
+
+            <!-- Covers (slightly visible under pages near edges) -->
+            <path d="M3 17 L3 9.2 Q6.8 6.6 11 8.2 L11 17 Z" fill="url(#coverL)" opacity="0.25"/>
+            <path d="M19 17 L19 9.2 Q15.2 6.6 11 8.2 L11 17 Z" fill="url(#coverR)" opacity="0.25"/>
+
+            <!-- Spine -->
+            <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="#D1D5DB"/>
+
+            <!-- Page flares up (give the “pages in the air” look) -->
+            <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="#E5E7EB"/>
+            <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="#E5E7EB"/>
+
+            <!-- Minimal outline to keep shape readable at 22px -->
+            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17"
+                        fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9" stroke-linejoin="round"/>
+            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17"
+                        fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9" stroke-linejoin="round"/>
         </svg>
     `;
 }
 
 function createTrayNativeImage() {
     const candidate = path.join(__dirname, 'iconTemplate.png');
+
     if (fs.existsSync(candidate)) {
-        const img = nativeImage.createFromPath(candidate);
-        if (!img.isEmpty()) {
-            if (process.platform === 'darwin') img.setTemplateImage(true);
-            return img;
+        const fileImg = nativeImage.createFromPath(candidate);
+        if (!fileImg.isEmpty()) {
+            if (process.platform === 'darwin') fileImg.setTemplateImage(true);
+            return fileImg;
         }
     }
+
     const svg = makeSvg({ template: process.platform === 'darwin' });
     const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-    let img = nativeImage.createFromDataURL(dataUrl);
-    if (!img.isEmpty()) {
-        try {
-            const png1x = img.resize({ width: 22, height: 22 }).toPNG();
-            const png2x = img.resize({ width: 44, height: 44 }).toPNG();
-            const multi = nativeImage.createEmpty();
-            multi.addRepresentation({ scaleFactor: 1, width: 22, height: 22, buffer: png1x });
-            multi.addRepresentation({ scaleFactor: 2, width: 44, height: 44, buffer: png2x });
-            if (process.platform === 'darwin') multi.setTemplateImage(true);
-            return multi;
-        } catch {
-            if (process.platform === 'darwin') img.setTemplateImage(true);
-            return img;
-        }
+    const baseImg = nativeImage.createFromDataURL(dataUrl);
+    if (baseImg.isEmpty()) {
+        return nativeImage.createFromDataURL(
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABhH6NsgAAAABJRU5ErkJggg=='
+        );
     }
-    return nativeImage.createFromDataURL(
-        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABhH6NsgAAAABJRU5ErkJggg=='
-    );
+
+    const out = nativeImage.createEmpty();
+
+    if (process.platform === 'win32') {
+        const reps = [
+            { sf: 1,        px: 16 },
+            { sf: 1.25, px: 20 },
+            { sf: 1.5,    px: 24 },
+            { sf: 2,        px: 32 },
+        ];
+        for (const { sf, px } of reps) {
+            const rep = baseImg.resize({ width: px, height: px });
+            out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
+        }
+        return out;
+    }
+
+    const reps = [
+        { sf: 1, px: 22 },
+        { sf: 2, px: 44 },
+        { sf: 3, px: 66 }, 
+    ];
+    for (const { sf, px } of reps) {
+        const rep = baseImg.resize({ width: px, height: px });
+        out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
+    }
+    if (process.platform === 'darwin') out.setTemplateImage(true);
+    return out;
 }
 
 // --- app lifecycle ---
