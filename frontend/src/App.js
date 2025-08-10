@@ -14,20 +14,16 @@ function App() {
         fetch('http://localhost:5000/api/status')
             .then(res => res.json())
             .then(data => {
-                const newStatus = Array.isArray(data.status)
-                    ? data.status.join(', ')
-                    : data.status;
+                const newStatus = Array.isArray(data.status) ? data.status.join(', ') : data.status;
                 setStatus(newStatus || '');
             })
-            .catch(() => {
-            });
-    }, []); 
+            .catch(() => {});
+    }, []);
 
     useEffect(() => {
         if (window.__GOODREADS_RPC_INITIALIZED__) return;
         window.__GOODREADS_RPC_INITIALIZED__ = true;
 
-        // Load config
         fetch('http://localhost:5000/api/config')
             .then(res => res.json())
             .then(setConfig)
@@ -52,7 +48,6 @@ function App() {
             })
             .catch(() => {});
 
-        // status polling (not in background)
         const handleVisibility = () => {
             if (document.visibilityState === 'visible') {
                 fetchStatus();
@@ -73,10 +68,10 @@ function App() {
         };
     }, [fetchStatus]);
 
-    const showMessage = msg => {
+    const showMessage = (msg) => {
         setMessage(msg);
         clearTimeout(messageTimer.current);
-        messageTimer.current = setTimeout(() => setMessage(''), 3000);
+        messageTimer.current = setTimeout(() => setMessage(''), 2500);
     };
 
     const saveConfig = () => {
@@ -91,7 +86,7 @@ function App() {
             .catch(() => {});
     };
 
-    const updateBook = isbn => {
+    const updateBook = (isbn) => {
         setSelectedISBN(isbn);
         fetch('http://localhost:5000/api/book/select', {
             method: 'POST',
@@ -118,14 +113,16 @@ function App() {
     };
 
     const exit = () => {
-        fetch('http://localhost:5000/shutdown', { method: 'POST' })
+        // Try polite backend shutdown with a tiny timeout, but don't wait on it to quit the app.
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 800);
+        fetch('http://localhost:5000/shutdown', { method: 'POST', signal: controller.signal })
             .catch(() => {})
-            .finally(() => {
-                showMessage('🛑 Exiting...');
-                setTimeout(() => {
-                    window.electron?.ipcRenderer?.send('force-quit');
-                }, 2000);
-            });
+            .finally(() => clearTimeout(t));
+
+        showMessage('🛑 Exiting...');
+        // Tell main process to perform hardExit (guaranteed full shutdown)
+        window.electron?.ipcRenderer?.send('force-quit');
     };
 
     if (!config) return <div style={{ padding: '20px' }}>Loading configuration...</div>;
@@ -144,22 +141,16 @@ function App() {
             <input
                 className="input"
                 value={config.discord_app_id || ''}
-                onChange={e => {
-                    setConfig({ ...config, discord_app_id: e.target.value });
-                    saveConfig();
-                    fetchStatus();
-                }}
+                onChange={e => { setConfig({ ...config, discord_app_id: e.target.value }); }}
+                onBlur={() => { saveConfig(); fetchStatus(); }}
             />
 
             <label>Goodreads User ID:</label>
             <input
                 className="input"
                 value={config.goodreads_id || ''}
-                onChange={e => {
-                    setConfig({ ...config, goodreads_id: e.target.value });
-                    saveConfig();
-                    fetchStatus();
-                }}
+                onChange={e => { setConfig({ ...config, goodreads_id: e.target.value }); }}
+                onBlur={() => { saveConfig(); fetchStatus(); }}
             />
 
             <label>Update Interval (seconds):</label>
@@ -170,9 +161,8 @@ function App() {
                 onChange={e => {
                     const val = parseInt(e.target.value, 10);
                     setConfig({ ...config, update_interval: Number.isNaN(val) ? 60 : val });
-                    saveConfig();
-                    fetchStatus();
                 }}
+                onBlur={() => { saveConfig(); fetchStatus(); }}
             />
 
             <label>Currently Reading:</label>
@@ -199,9 +189,8 @@ function App() {
                     onChange={e => {
                         const updated = { ...config, minimizeToTray: e.target.checked };
                         setConfig(updated);
-                        saveConfig();
-                        fetchStatus();
                     }}
+                    onBlur={() => { saveConfig(); fetchStatus(); }}
                 />
                 {' '}Minimize to Tray
             </label>
@@ -213,6 +202,8 @@ function App() {
                     onChange={e => {
                         const updated = { ...config, startOnStartup: e.target.checked };
                         setConfig(updated);
+                    }}
+                    onBlur={() => {
                         saveConfig();
                         fetch('http://localhost:5000/api/startup/enable', { method: 'POST' }).catch(() => {});
                         fetchStatus();
@@ -229,9 +220,7 @@ function App() {
             </div>
 
             <p style={{ marginTop: '10px' }}><strong>Status:</strong> {status}</p>
-            {message && (
-                <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>
-            )}
+            {message && <p style={{ color: 'green', fontWeight: 'bold' }}>{message}</p>}
         </div>
     );
 }
