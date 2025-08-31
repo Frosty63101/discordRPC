@@ -16,9 +16,41 @@ let backendReady = false;
 const SHUTDOWN_REQUEST_TIMEOUT_MS = 2000;
 const BACKEND_TERM_GRACE_MS = 800;
 const BACKEND_KILL_GRACE_MS = 800;
-const APP_FORCE_EXIT_MS = 4000; 
+const APP_FORCE_EXIT_MS = 4000;
 
-// --- single instance guard ---
+// ---------- App identity & icon defaults ----------
+app.setName('Goodreads Discord RPC');
+if (process.platform === 'win32') {
+    // Helps Windows taskbar pinning + correct icon usage for the .exe
+    app.setAppUserModelId('com.frosty63.goodreads-rpc');
+}
+
+// Common icon resolution logic
+function resolveFaviconCandidates() {
+    // Try packaged resources first (Electron-packaged app)
+    const resourceRoot = process.resourcesPath || path.resolve(__dirname, '..');
+    const packagedIco = path.join(resourceRoot, 'favicon.ico');
+    const packagedPng = path.join(resourceRoot, 'favicon.png');
+
+    // Try dev tree (repo layout)
+    const devIco = path.resolve(__dirname, '..', 'frontend', 'public', 'favicon.ico');
+    const devPng = path.resolve(__dirname, '..', 'frontend', 'public', 'favicon.png');
+
+    const candidates = [];
+    [packagedIco, devIco, packagedPng, devPng].forEach(p => { if (fs.existsSync(p)) candidates.push(p); });
+    return candidates;
+}
+
+function loadFaviconNativeImage() {
+    const candidates = resolveFaviconCandidates(); // prefer .ico first
+    for (const p of candidates) {
+        const ni = nativeImage.createFromPath(p);
+        if (!ni.isEmpty()) return ni;
+    }
+    return null;
+}
+
+// ---------- single instance guard ----------
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) app.quit();
 app.on('second-instance', () => {
@@ -29,11 +61,11 @@ app.on('second-instance', () => {
     }
 });
 
-// --- crash guards ---
+// ---------- crash guards ----------
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
 
-// --- Rosetta check (mac) ---
+// ---------- Rosetta check (mac) ----------
 let rosettaAvailable = null;
 function isRosettaInstalled() {
     if (rosettaAvailable !== null) return rosettaAvailable;
@@ -46,7 +78,7 @@ function isRosettaInstalled() {
     return rosettaAvailable;
 }
 
-// --- resolve backend ---
+// ---------- resolve backend ----------
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
     if (process.platform === 'win32') {
@@ -69,7 +101,7 @@ function getFlaskBinary() {
     throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
-// --- load config (for minimizeToTray decision on first boot) ---
+// ---------- load local config (minimizeToTray on first boot) ----------
 function loadLocalConfig() {
     try {
         const home = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME'];
@@ -82,21 +114,15 @@ function loadLocalConfig() {
 }
 const localConfig = loadLocalConfig();
 
-// --- tray image generator ---
+// ---------- tray image synthesizer fallback ----------
 function makeSvg({ template = false }) {
     if (template) {
         return `
             <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-                <!-- Open book silhouette: two halves + page flares -->
-                <!-- Left book block -->
                 <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="black"/>
-                <!-- Right book block (mirror) -->
                 <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="black"/>
-                <!-- Spine thickness -->
                 <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="black"/>
-                <!-- Page flares up (left) -->
                 <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="black"/>
-                <!-- Page flares up (right) -->
                 <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="black"/>
             </svg>
         `;
@@ -109,54 +135,28 @@ function makeSvg({ template = false }) {
                     <stop offset="0%" stop-color="#2563eb"/>
                     <stop offset="100%" stop-color="#1d4ed8"/>
                 </linearGradient>
-                <linearGradient id="coverL" x1="1" y1="1" x2="11" y2="17" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stop-color="#3b82f6"/>
-                    <stop offset="100%" stop-color="#1d4ed8"/>
-                </linearGradient>
-                <linearGradient id="coverR" x1="21" y1="1" x2="11" y2="17" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stop-color="#3b82f6"/>
-                    <stop offset="100%" stop-color="#1d4ed8"/>
-                </linearGradient>
             </defs>
-
-            <!-- Rounded background for legibility on mixed trays -->
             <rect x="1" y="1" width="20" height="20" rx="5" ry="5" fill="url(#bg)"/>
-
-            <!-- Pages (light) -->
             <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
             <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
-
-            <!-- Covers (slightly visible under pages near edges) -->
-            <path d="M3 17 L3 9.2 Q6.8 6.6 11 8.2 L11 17 Z" fill="url(#coverL)" opacity="0.25"/>
-            <path d="M19 17 L19 9.2 Q15.2 6.6 11 8.2 L11 17 Z" fill="url(#coverR)" opacity="0.25"/>
-
-            <!-- Spine -->
             <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="#D1D5DB"/>
-
-            <!-- Page flares up (give the “pages in the air” look) -->
             <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="#E5E7EB"/>
             <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="#E5E7EB"/>
-
-            <!-- Minimal outline to keep shape readable at 22px -->
-            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17"
-                        fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9" stroke-linejoin="round"/>
-            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17"
-                        fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9" stroke-linejoin="round"/>
+            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17" fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9"/>
+            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17" fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9"/>
         </svg>
     `;
 }
 
 function createTrayNativeImage() {
-    const candidate = path.join(__dirname, 'iconTemplate.png');
-
-    if (fs.existsSync(candidate)) {
-        const fileImg = nativeImage.createFromPath(candidate);
-        if (!fileImg.isEmpty()) {
-            if (process.platform === 'darwin') fileImg.setTemplateImage(true);
-            return fileImg;
-        }
+    // Prefer favicon.ico / favicon.png
+    const fav = loadFaviconNativeImage();
+    if (fav && !fav.isEmpty()) {
+        if (process.platform === 'darwin') fav.setTemplateImage(false); // .ico isn't a template; use as-is
+        return fav;
     }
 
+    // Fallback: your previous data-URL SVG generator
     const svg = makeSvg({ template: process.platform === 'darwin' });
     const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
     const baseImg = nativeImage.createFromDataURL(dataUrl);
@@ -167,35 +167,32 @@ function createTrayNativeImage() {
     }
 
     const out = nativeImage.createEmpty();
-
     if (process.platform === 'win32') {
-        const reps = [
-            { sf: 1,        px: 16 },
-            { sf: 1.25, px: 20 },
-            { sf: 1.5,    px: 24 },
-            { sf: 2,        px: 32 },
-        ];
+        const reps = [{ sf: 1, px: 16 }, { sf: 1.25, px: 20 }, { sf: 1.5, px: 24 }, { sf: 2, px: 32 }];
         for (const { sf, px } of reps) {
             const rep = baseImg.resize({ width: px, height: px });
             out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
         }
         return out;
     }
-
-    const reps = [
-        { sf: 1, px: 22 },
-        { sf: 2, px: 44 },
-        { sf: 3, px: 66 }, 
-    ];
+    const reps = [{ sf: 1, px: 22 }, { sf: 2, px: 44 }, { sf: 3, px: 66 }];
     for (const { sf, px } of reps) {
         const rep = baseImg.resize({ width: px, height: px });
         out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
     }
-    if (process.platform === 'darwin') out.setTemplateImage(true);
+    if (process.platform === 'darwin') out.setTemplateImage(false);
     return out;
 }
 
-// --- app lifecycle ---
+// ---------- preload bridge for renderer IPC ----------
+function getPreloadPath() {
+    const devPreload = path.resolve(__dirname, 'preload.js');
+    if (fs.existsSync(devPreload)) return devPreload;
+    const packagedPreload = path.join(process.resourcesPath, 'preload.js');
+    return fs.existsSync(packagedPreload) ? packagedPreload : undefined;
+}
+
+// ---------- app lifecycle ----------
 app.whenReady().then(async () => {
     try {
         createSplash();
@@ -208,13 +205,22 @@ app.whenReady().then(async () => {
         showSplashError(err);
         setupTray(); // still allow user to Quit
     }
+
+    // macOS dock icon should use favicon.png if available
+    if (process.platform === 'darwin') {
+        const fav = loadFaviconNativeImage();
+        if (fav && !fav.isEmpty()) {
+            try { app.dock?.setIcon(fav); } catch {}
+        }
+    }
 });
 
-// --- splash ---
+// ---------- splash ----------
 function createSplash() {
     try {
         splash = new BrowserWindow({
             width: 420, height: 320, frame: false, alwaysOnTop: true, resizable: false, show: false,
+            icon: loadFaviconNativeImage() || undefined
         });
         const splashPath = path.resolve(__dirname, '..', 'frontend', 'public', 'splash.html');
         if (fs.existsSync(splashPath)) splash.loadFile(splashPath);
@@ -235,7 +241,7 @@ function showSplashError(err) {
     try { splash.loadURL(`data:text/html,${encodeURIComponent(html)}`); } catch {}
 }
 
-// --- backend launch with retries ---
+// ---------- backend launch with retries ----------
 async function launchBackendWithRetries(maxAttempts = 3) {
     const { binaryPath, launcher, args } = getFlaskBinary();
     if (!fs.existsSync(binaryPath) && !launcher) throw new Error(`Backend not found at ${binaryPath}`);
@@ -291,10 +297,19 @@ function waitForFlask(retries = 75) {
 
 function createMainWindow() {
     try {
+        const iconImage = loadFaviconNativeImage() || undefined;
+
         mainWindow = new BrowserWindow({
             width: 900, height: 680, show: false,
-            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+            icon: iconImage, // <-- UI window/taskbar icon defaults to favicon.ico
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true,
+                preload: getPreloadPath() // expose ipc to renderer safely
+            }
         });
+
         mainWindow.loadFile(path.resolve(__dirname, '..', 'frontend', 'build', 'index.html'));
         mainWindow.once('ready-to-show', () => {
             if (splash && !splash.isDestroyed()) splash.close();
@@ -353,7 +368,6 @@ function hardExit() {
     if (isQuitting) return;
     isQuitting = true;
 
-    // Final safety: if something hangs, force the process down hard.
     const absoluteKill = setTimeout(() => {
         try { destroyUi(); } catch {}
         process.exit(0);
@@ -363,17 +377,14 @@ function hardExit() {
         .catch(() => {})
         .finally(() => {
             clearTimeout(absoluteKill);
-            // Ensure all windows are gone before quitting
             destroyUi();
             app.quit();
-            // If Electron refuses to die (rare), nuke it, kill it with fire and salt the earth behind you:
             setTimeout(() => process.exit(0), 500).unref?.();
         });
 }
 
 function gracefulShutdown() {
     return new Promise((resolve) => {
-        // Close windows early so the user sees immediate exit
         try { if (splash && !splash.isDestroyed()) splash.close(); } catch {}
         try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); } catch {}
 
@@ -383,19 +394,16 @@ function gracefulShutdown() {
             resolve();
         };
 
-        // 1) Ask nicely
         const req = http.request({
             hostname: 'localhost', port: 5000, path: '/shutdown',
             method: 'POST', timeout: SHUTDOWN_REQUEST_TIMEOUT_MS
         }, () => {
-            // 2) Give it a moment to die on its own
             setTimeout(() => {
                 escalateKillChain().finally(done);
             }, BACKEND_TERM_GRACE_MS);
         });
 
         req.on('error', () => {
-            // If request fails, kill it immediately with extreme prejudice
             escalateKillChain().finally(done);
         });
 
@@ -407,7 +415,6 @@ async function escalateKillChain() {
     tryKillBackend('SIGTERM');
     await delay(BACKEND_TERM_GRACE_MS);
 
-    // If it somehow is still around, power word kill
     if (flaskProcess && !flaskProcess.killed) {
         try {
             if (process.platform === 'win32') {
@@ -426,19 +433,13 @@ function tryKillBackend(signal) {
     } catch (e) {
         console.error('Error killing backend:', e);
     } finally {
-        // Null it even if kill failed
         flaskProcess = null;
     }
 }
 
 function destroyUi() {
-    // Tear down windows and listeners 
-    try {
-        if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.removeAllListeners(); mainWindow.destroy(); }
-    } catch {}
-    try {
-        if (splash && !splash.isDestroyed()) { splash.removeAllListeners(); splash.destroy(); }
-    } catch {}
+    try { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.removeAllListeners(); mainWindow.destroy(); } } catch {}
+    try { if (splash && !splash.isDestroyed()) { splash.removeAllListeners(); splash.destroy(); } } catch {}
     try { if (tray) tray.destroy(); } catch {}
     tray = null; splash = null; mainWindow = null;
 
@@ -452,7 +453,6 @@ function destroyUi() {
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 app.on('window-all-closed', () => {
-    // If user is exiting, finish the job. Otherwise honor minimizeToTray on macOS.
     if (isQuitting) return;
     if (process.platform !== 'darwin' && !localConfig.minimizeToTray) hardExit();
 });

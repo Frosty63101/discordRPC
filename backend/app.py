@@ -11,6 +11,11 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
+from flask_cors import CORS 
+
+app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
+
 presenceThread = None
 statusLock = threading.Lock()
 configLock = threading.Lock()
