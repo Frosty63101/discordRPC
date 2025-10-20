@@ -1,17 +1,18 @@
-import time
-from flask import Flask, jsonify, request
 import json
-import threading
-import signal
 import os
-import sys
 import re
+import signal
+import sys
+import threading
+import time
+
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-from flask_cors import CORS 
+from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
