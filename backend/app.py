@@ -271,7 +271,7 @@ def get_books():
                 log("StoryGraph username missing in config.")
                 return None
 
-            url = f"https://storygraph.com/currently-reading/{storygraphUsername}"
+            url = f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
             headers = {"User-Agent": "Mozilla/5.0"}
 
             updateStatus("Info", f"Fetching books from {url}")
