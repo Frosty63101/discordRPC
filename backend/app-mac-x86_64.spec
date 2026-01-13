@@ -6,7 +6,7 @@ block_cipher = None
 
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
 playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
-specDir = Path(__file__).resolve().parent
+specDir = Path(SPECPATH)
 bundledZip = specDir / "playwright-browsers.zip"
 
 playwrightDatas = []
