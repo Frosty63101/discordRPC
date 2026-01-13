@@ -8,7 +8,8 @@ block_cipher = None
 
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
 playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
-bundledZip = Path("backend") / "playwright-browsers.zip"
+specDir = Path(__file__).resolve().parent
+bundledZip = specDir / "playwright-browsers.zip"
 
 playwrightDatas = []
 
@@ -59,3 +60,4 @@ coll = COLLECT(
     name='app-linux',
     distpath='dist/app-linux'
 )
+  
