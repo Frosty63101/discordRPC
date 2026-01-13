@@ -1,52 +1,61 @@
-# backend/app-linux.spec
 import sys
 import os
-import glob
-from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 import playwright
 
 block_cipher = None
 
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
-playwrightBrowsersDir = playwrightPackageDir / ".local-browsers"
+playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
+bundledZip = Path("backend") / "playwright-browsers.zip"
 
 playwrightDatas = []
-if playwrightBrowsersDir.exists():
-    # Bundle Chromium where Playwright expects it
-    playwrightDatas.append((str(playwrightBrowsersDir), "playwright/.local-browsers"))
+
+if playwrightDriverPackageDir.exists():
+    playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
 else:
-    print("WARNING: Playwright .local-browsers not found. Did you run playwright install with PLAYWRIGHT_BROWSERS_PATH=0?")
+    print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
 
-pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
+if bundledZip.exists():
+    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
+else:
+    print("WARNING: backend/playwright-browsers.zip not found. CI must create it before PyInstaller.")
 
-a = Analysis(['app.py'],
-             pathex=['backend'],
-             binaries=[(dll, '.') for dll in pythonDlls],
-             datas=playwrightDatas,
-             hiddenimports=['pypresence'] + collect_submodules("playwright"),
-             hookspath=[],
-             runtime_hooks=[],
-             excludes=[],
-             win_no_prefer_redirects=False,
-             win_private_assemblies=False,
-             cipher=block_cipher,
-             noarchive=False)
+a = Analysis(
+    ['app.py'],
+    pathex=['backend'],
+    binaries=[],
+    datas=playwrightDatas,
+    hiddenimports=collect_submodules("playwright") + ['pypresence'],
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=[],
+    cipher=block_cipher,
+    noarchive=False
+)
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-exe = EXE(pyz,
-          a.scripts,
-          [],
-          exclude_binaries=False,
-          name='app_linux_bin',
-          debug=False,
-          bootloader_ignore_signals=False,
-          strip=False,
-          upx=True,
-          console=False)
-coll = COLLECT(exe,
-               a.binaries,
-               a.zipfiles,
-               a.datas,
-               strip=False,
-               upx=True,
-               name='app_linux_bin')
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=False,
+    name='app_linux_bin',
+    debug=False,
+    strip=False,
+    upx=True,
+    console=False
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    name='app-linux',
+    distpath='dist/app-linux'
+)

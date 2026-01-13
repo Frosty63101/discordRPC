@@ -109,6 +109,21 @@ jobs:
         run: |
           export PLAYWRIGHT_BROWSERS_PATH=0
           python -m playwright install chromium
+          python -c "import playwright, pathlib; p=pathlib.Path(playwright.__file__).resolve().parent/'driver'/'package'/'.local-browsers'; print(p)"
+          cd backend
+          python - <<'PY'
+          import playwright, pathlib, zipfile, os
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          outZip = pathlib.Path("playwright-browsers.zip")
+          if not browsers.exists():
+              raise SystemExit(f"Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?")
+          with zipfile.ZipFile(outZip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for p in browsers.rglob("*"):
+                  if p.is_file():
+                      z.write(p, p.relative_to(browsers))
+          print("Wrote", outZip, "from", browsers)
+          PY
+          cd ..
 
       - name: Rebuild PyInstaller bootloader for x86_64
         run: |
@@ -199,6 +214,21 @@ jobs:
         run: |
           export PLAYWRIGHT_BROWSERS_PATH=0
           python -m playwright install chromium
+          python -c "import playwright, pathlib; p=pathlib.Path(playwright.__file__).resolve().parent/'driver'/'package'/'.local-browsers'; print(p)"
+          cd backend
+          python - <<'PY'
+          import playwright, pathlib, zipfile, os
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          outZip = pathlib.Path("playwright-browsers.zip")
+          if not browsers.exists():
+              raise SystemExit(f"Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?")
+          with zipfile.ZipFile(outZip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for p in browsers.rglob("*"):
+                  if p.is_file():
+                      z.write(p, p.relative_to(browsers))
+          print("Wrote", outZip, "from", browsers)
+          PY
+          cd ..
 
       - name: Rebuild PyInstaller bootloader for arm64
         run: |
@@ -280,6 +310,20 @@ jobs:
           python -m playwright install-deps
           export PLAYWRIGHT_BROWSERS_PATH=0
           python -m playwright install chromium
+          cd backend
+          python - <<'PY'
+          import playwright, pathlib, zipfile
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          outZip = pathlib.Path("playwright-browsers.zip")
+          if not browsers.exists():
+              raise SystemExit(f"Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?")
+          with zipfile.ZipFile(outZip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for p in browsers.rglob("*"):
+                  if p.is_file():
+                      z.write(p, p.relative_to(browsers))
+          print("Wrote", outZip)
+          PY
+          cd ..
 
       - name: Build Python binary
         run: pyinstaller backend/app-linux.spec

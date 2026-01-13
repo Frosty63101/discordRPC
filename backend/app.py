@@ -24,11 +24,64 @@ init_event = threading.Event()
 is_running_event = threading.Event()
 should_run_event = threading.Event()
 
+import os
+import sys
+import zipfile
+
+
 def setPlaywrightBrowserPathForPyinstaller():
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        extractedRoot = sys._MEIPASS
-        # Let Playwright use the extracted packaged browsers
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", extractedRoot)
+    """
+    If we're running from a PyInstaller build:
+      - Extract bundled playwright-browsers.zip to a writable per-user cache dir
+      - Point PLAYWRIGHT_BROWSERS_PATH at that extracted directory
+    This works on macOS/Linux/Windows.
+    """
+    if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
+        return
+
+    extractedRoot = sys._MEIPASS
+
+    # The zip will be bundled at: <_MEIPASS>/playwright-browsers.zip
+    bundledZipPath = os.path.join(extractedRoot, "playwright-browsers.zip")
+    if not os.path.exists(bundledZipPath):
+        # If you choose not to use zip on Windows later, this is fine.
+        return
+
+    # Per-user cache location (writable)
+    if sys.platform == "win32":
+        baseCacheDir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        baseCacheDir = os.path.join(os.path.expanduser("~"), "Library", "Caches")
+    else:
+        baseCacheDir = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+
+    targetDir = os.path.join(baseCacheDir, "discordrpc-playwright-browsers")
+
+    # Use a marker file so we only unzip once
+    markerPath = os.path.join(targetDir, ".extracted-ok")
+
+    if not os.path.exists(markerPath):
+        os.makedirs(targetDir, exist_ok=True)
+
+        # Clean partial extracts if any
+        # (optional but helps if extraction is interrupted)
+        try:
+            for rootDir, dirNames, fileNames in os.walk(targetDir):
+                for fileName in fileNames:
+                    if fileName != ".extracted-ok":
+                        pass
+        except Exception:
+            pass
+
+        with zipfile.ZipFile(bundledZipPath, "r") as zipRef:
+            zipRef.extractall(targetDir)
+
+        with open(markerPath, "w", encoding="utf-8") as f:
+            f.write("ok")
+
+    # IMPORTANT: Playwright expects PLAYWRIGHT_BROWSERS_PATH to point at the directory
+    # that CONTAINS the browser folders (chromium-XXXX, firefox-XXXX, etc).
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = targetDir
 
 setPlaywrightBrowserPathForPyinstaller()
 

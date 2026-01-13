@@ -1,5 +1,3 @@
-# backend/app-mac-arm64.spec
-import os
 from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
 import playwright
@@ -7,26 +5,30 @@ import playwright
 block_cipher = None
 
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
-playwrightBrowsersDir = playwrightPackageDir / ".local-browsers"
+playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
+bundledZip = Path("backend") / "playwright-browsers.zip"
 
 playwrightDatas = []
-if playwrightBrowsersDir.exists():
-    # Bundle Chromium where Playwright expects it
-    playwrightDatas.append((str(playwrightBrowsersDir), "playwright/.local-browsers"))
+
+if playwrightDriverPackageDir.exists():
+    playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
 else:
-    print("WARNING: Playwright .local-browsers not found. Did you run playwright install with PLAYWRIGHT_BROWSERS_PATH=0?")
+    print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
+
+if bundledZip.exists():
+    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
+else:
+    print("WARNING: backend/playwright-browsers.zip not found. CI must create it before PyInstaller.")
 
 a = Analysis(
     ['app.py'],
     pathex=['backend'],
     binaries=[],
     datas=playwrightDatas,
-    hiddenimports=collect_submodules('flask_cors') + collect_submodules('flask') + collect_submodules('_internal') + ['pypresence'] + collect_submodules("playwright"),
+    hiddenimports=collect_submodules("playwright") + collect_submodules("flask") + collect_submodules("flask_cors") + ['pypresence'],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False
 )
@@ -40,7 +42,6 @@ exe = EXE(
     exclude_binaries=True,
     name='app_mac_bin_arm64',
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=False
