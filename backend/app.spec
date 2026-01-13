@@ -2,17 +2,30 @@
 import sys
 import os
 import glob
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
+import playwright
 
 block_cipher = None
+
+playwrightPackageDir = Path(playwright.__file__).resolve().parent
+playwrightBrowsersDir = playwrightPackageDir / ".local-browsers"
+
+playwrightDatas = []
+if playwrightBrowsersDir.exists():
+    # Bundle Chromium where Playwright expects it
+    playwrightDatas.append((str(playwrightBrowsersDir), "playwright/.local-browsers"))
+else:
+    print("WARNING: Playwright .local-browsers not found. Did you run playwright install with PLAYWRIGHT_BROWSERS_PATH=0?")
+
 
 pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
 
 a = Analysis(['app.py'],
              pathex=['backend'],
              binaries=[(dll, '.') for dll in pythonDlls],
-             datas=[],
-             hiddenimports=['pypresence'],
+             datas=playwrightDatas,
+             hiddenimports = collect_submodules("playwright") + ['pypresence'],
              hookspath=[],
              runtime_hooks=[],
              excludes=[],

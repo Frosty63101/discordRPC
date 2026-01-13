@@ -24,6 +24,14 @@ init_event = threading.Event()
 is_running_event = threading.Event()
 should_run_event = threading.Event()
 
+def setPlaywrightBrowserPathForPyinstaller():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        extractedRoot = sys._MEIPASS
+        # Let Playwright use the extracted packaged browsers
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", extractedRoot)
+
+setPlaywrightBrowserPathForPyinstaller()
+
 DEFAULT_CONFIG = {
     "goodreads_id": "your_goodreads_id_here",
     "discord_app_id": "1356666997760462859",
@@ -272,25 +280,101 @@ def get_books():
                 return None
 
             url = f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
-            headers = {"User-Agent": "Mozilla/5.0"}
+
+            # Pull cookie from config if present
+            rememberUserToken = ""
+            with configLock:
+                rememberUserToken = (CONFIG.get("storygraph_remember_user_token") or "").strip()
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://app.thestorygraph.com/",
+                "Connection": "keep-alive",
+            }
 
             updateStatus("Info", f"Fetching books from {url}")
             log(f"Fetching books from {url}")
 
             response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code != 200:
+
+            htmlText = None
+
+            if response.status_code == 200:
+                htmlText = response.text
+            elif response.status_code == 403:
+                # Fall back to browser-rendered HTML (bypasses the anti-bot 403)
+                updateStatus("Info", "StoryGraph blocked requests (403). Using headless browser...")
+                log("StoryGraph returned 403; falling back to Playwright...")
+
+                import time as timeModule
+
+                from playwright.sync_api import sync_playwright
+
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+
+                    context = browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent=headers["User-Agent"],
+                    )
+
+                    # If cookie provided, set it before navigation
+                    if rememberUserToken:
+                        context.add_cookies([{
+                            "name": "remember_user_token",
+                            "value": rememberUserToken,
+                            "domain": "app.thestorygraph.com",
+                            "path": "/",
+                            "httpOnly": True,
+                            "secure": True,
+                            "sameSite": "Lax",
+                        }])
+
+                    page = context.new_page()
+                    page.goto(url, wait_until="networkidle", timeout=30000)
+
+                    # Scroll until page stops growing (lazy-loading)
+                    scrollPauseSeconds = 2
+                    maxScrolls = 60
+
+                    lastHeight = page.evaluate("document.body.scrollHeight")
+                    scrollCount = 0
+
+                    while True:
+                        scrollCount += 1
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        timeModule.sleep(scrollPauseSeconds)
+
+                        newHeight = page.evaluate("document.body.scrollHeight")
+                        if newHeight == lastHeight:
+                            break
+
+                        lastHeight = newHeight
+                        if scrollCount >= maxScrolls:
+                            break
+
+                    htmlText = page.content()
+                    browser.close()
+            else:
                 msg = f"Failed to fetch books: {response.status_code} {response.reason}"
                 updateStatus("Error", msg)
                 log(msg)
                 return None
 
-            soup = BeautifulSoup(response.text, "html.parser")
+            if not htmlText:
+                updateStatus("Error", "Failed to fetch StoryGraph HTML")
+                log("Failed to fetch StoryGraph HTML (empty).")
+                return None
 
-            # Each book block matches your pasted HTML:
+            soup = BeautifulSoup(htmlText, "html.parser")
+
+            # Your existing selector (may be brittle, but keep it for now)
             bookDivs = soup.select("div.grid.grid-cols-12.gap-4.p-4")
             if not bookDivs:
                 updateStatus("Error", "No book divs found")
-                log("No book divs found in the response.")
+                log("No book divs found in the StoryGraph HTML.")
                 return None
 
             found = {}
@@ -313,14 +397,15 @@ def get_books():
                     bookKey = bookId if bookId else f"nobookid-{title}-{author}"
 
                     found[bookKey] = {
-                        "isbn": bookKey,             # keep API field name stable for the UI
+                        "isbn": bookKey,  # keep API field name stable for the UI
                         "bookId": bookId,
                         "title": title,
                         "author": author,
                         "coverArt": coverArt,
                         "startDate": startDate,
                         "platform": "storygraph",
-                        "bookUrl": f"https://storygraph.com{bookHref}" if bookHref else url
+                        # FIXED: use correct domain
+                        "bookUrl": f"https://app.thestorygraph.com{bookHref}" if bookHref else url
                     }
                 except Exception as rowErr:
                     log(f"Failed to parse a StoryGraph book block: {rowErr}")
@@ -343,6 +428,7 @@ def get_books():
         updateStatus("Error", f"Unknown platform: {platform}")
         log(f"Unknown platform: {platform}")
         return None
+
 
 @app.route("/api/scraper/get_books", methods=["GET"])
 def scraper_get_books():
