@@ -3,44 +3,52 @@ import sys
 import os
 import glob
 from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules
 import playwright
 
 block_cipher = None
 
+# Where PyInstaller is running this spec from
+specDir = Path(SPECPATH)
+
+# Playwright python package locations
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
 playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
-playwrightBrowsersDir = playwrightDriverPackageDir / ".local-browsers"
+
+# This zip is created by your workflow step inside backend/
+bundledZip = specDir / "playwright-browsers.zip"
 
 playwrightDatas = []
 
-# Bundle Playwright's driver package (contains node/cli drivers)
+# 1) Bundle Playwright driver package (node driver + cli that Playwright uses)
 if playwrightDriverPackageDir.exists():
     playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
 else:
     print(f"WARNING: Playwright driver package dir not found: {playwrightDriverPackageDir}")
 
-# Bundle the installed browsers (from PLAYWRIGHT_BROWSERS_PATH=0 install)
-if playwrightBrowsersDir.exists():
-    playwrightDatas.append((str(playwrightBrowsersDir), "playwright/driver/package/.local-browsers"))
+# 2) Bundle zipped browsers (preferred)
+if bundledZip.exists():
+    # Put it at the top level in _MEIPASS so your runtime code finds it:
+    # os.path.join(sys._MEIPASS, "playwright-browsers.zip")
+    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
 else:
-    print("WARNING: Playwright .local-browsers not found. Did you run playwright install with PLAYWRIGHT_BROWSERS_PATH=0?")
+    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}. Did CI create it in backend/?")
 
+# Windows needs python*.dll sometimes depending on how Python is installed on runner
 pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
 
 a = Analysis(
-    ['app.py'],
-    pathex=['backend'],
-    binaries=[(dll, '.') for dll in pythonDlls],
+    ["app.py"],
+    pathex=["backend"],
+    binaries=[(dll, ".") for dll in pythonDlls],
     datas=playwrightDatas,
-    hiddenimports=collect_submodules("playwright") + ['pypresence'],
+    hiddenimports=collect_submodules("playwright") + ["pypresence"],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
-    noarchive=False
+    noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -50,12 +58,11 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=False,
-    name='app',
+    name="app",
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False
+    console=False,
 )
 
 coll = COLLECT(
@@ -65,7 +72,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    distpath='resources/app/build',
-    workpath='backend/build',
-    name='app'
+    distpath="resources/app/build",
+    workpath="backend/build",
+    name="app",
 )

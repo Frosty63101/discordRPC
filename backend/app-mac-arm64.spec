@@ -1,5 +1,5 @@
-from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 import playwright
 
 block_cipher = None
@@ -10,9 +10,12 @@ playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
 specDir = Path(SPECPATH)
 bundledZip = specDir / "playwright-browsers.zip"
 
-playwrightDatas = [
-    (str(playwrightDriverPackageDir), "playwright/driver/package"),
-]
+playwrightDatas = []
+
+if playwrightDriverPackageDir.exists():
+    playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
+else:
+    print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
 
 if bundledZip.exists():
     playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
@@ -23,14 +26,16 @@ a = Analysis(
     ["app.py"],
     pathex=["backend"],
     binaries=[],
-    datas = [
-      (str(playwrightDriverPackageDir), "playwright/driver/package"),
-      ("playwright-browsers.zip", "playwright-browsers.zip"),
-    ]
-    hiddenimports=collect_submodules("flask") + collect_submodules("flask_cors") + ["pypresence"] + collect_submodules("playwright"),
+    datas=playwrightDatas,
+    hiddenimports=[
+        "pypresence",
+        "playwright.sync_api",
+    ] + collect_submodules("flask") + collect_submodules("flask_cors"),
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "playwright._impl.__pyinstaller",
+    ],
     cipher=block_cipher,
     noarchive=False,
 )

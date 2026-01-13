@@ -32,6 +32,24 @@ jobs:
       - name: Install Playwright Chromium (bundled)
         run: |
           set PLAYWRIGHT_BROWSERS_PATH=0 && python -m playwright install chromium
+      
+      - name: Zip Playwright browsers for bundling
+        run: |
+          cd backend
+          python - <<PY
+          import playwright, pathlib, zipfile
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          outZip = pathlib.Path("playwright-browsers.zip")
+          if not browsers.exists():
+              raise SystemExit(f"Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?")
+          with zipfile.ZipFile(outZip, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for p in browsers.rglob("*"):
+                  if p.is_file():
+                      z.write(p, p.relative_to(browsers))
+          print("Wrote", outZip)
+          PY
+          cd ..
+  
 
       - name: Build Python binary
         run: pyinstaller backend/app.spec
@@ -343,7 +361,7 @@ jobs:
           print("Wrote", outZip)
           PY
           cd ..
-          
+
       - name: Remove Playwright .local-browsers (prevents PyInstaller collecting browsers as binaries)
         run: |
           python - <<'PY'

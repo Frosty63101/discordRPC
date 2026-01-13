@@ -1,6 +1,4 @@
-import sys, os, glob
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
 import playwright
 
 block_cipher = None
@@ -11,29 +9,32 @@ playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
 specDir = Path(SPECPATH)
 bundledZip = specDir / "playwright-browsers.zip"
 
-playwrightDatas = [
-    (str(playwrightDriverPackageDir), "playwright/driver/package"),
-]
+playwrightDatas = []
+
+if playwrightDriverPackageDir.exists():
+    playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
+else:
+    print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
 
 if bundledZip.exists():
     playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
 else:
     print(f"WARNING: playwright-browsers.zip not found at {bundledZip}")
 
-pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
-
 a = Analysis(
     ["app.py"],
     pathex=["backend"],
-    binaries=[(dll, ".") for dll in pythonDlls],
-    datas = [
-      (str(playwrightDriverPackageDir), "playwright/driver/package"),
-      ("playwright-browsers.zip", "playwright-browsers.zip"),
-    ]
-    hiddenimports=["pypresence"] + collect_submodules("playwright"),
+    binaries=[],
+    datas=playwrightDatas,
+    hiddenimports=[
+        "pypresence",
+        "playwright.sync_api",
+    ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "playwright._impl.__pyinstaller",
+    ],
     cipher=block_cipher,
     noarchive=False,
 )
@@ -59,6 +60,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    name="app-linux",
-    distpath="dist/app-linux",
+    name="app_linux",
+    distpath="dist/app_linux",
 )
