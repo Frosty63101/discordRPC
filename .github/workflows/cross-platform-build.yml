@@ -125,6 +125,16 @@ jobs:
           PY
           cd ..
 
+      - name: Remove Playwright .local-browsers (prevents PyInstaller codesign failures)
+        run: |
+          python - <<'PY'
+          import playwright, pathlib, shutil
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          print("Deleting:", browsers)
+          shutil.rmtree(browsers, ignore_errors=True)
+          print("Exists after delete?", browsers.exists())
+          PY
+
       - name: Rebuild PyInstaller bootloader for x86_64
         run: |
           git clone https://github.com/pyinstaller/pyinstaller.git
@@ -229,7 +239,16 @@ jobs:
           print("Wrote", outZip, "from", browsers)
           PY
           cd ..
-
+      - name: Remove Playwright .local-browsers (prevents PyInstaller codesign failures)
+        run: |
+          python - <<'PY'
+          import playwright, pathlib, shutil
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          print("Deleting:", browsers)
+          shutil.rmtree(browsers, ignore_errors=True)
+          print("Exists after delete?", browsers.exists())
+          PY
+  
       - name: Rebuild PyInstaller bootloader for arm64
         run: |
           git clone https://github.com/pyinstaller/pyinstaller.git
@@ -324,7 +343,17 @@ jobs:
           print("Wrote", outZip)
           PY
           cd ..
-
+          
+      - name: Remove Playwright .local-browsers (prevents PyInstaller collecting browsers as binaries)
+        run: |
+          python - <<'PY'
+          import playwright, pathlib, shutil
+          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
+          print("Deleting:", browsers)
+          shutil.rmtree(browsers, ignore_errors=True)
+          print("Exists after delete?", browsers.exists())
+          PY
+  
       - name: Build Python binary
         run: pyinstaller backend/app-linux.spec
 

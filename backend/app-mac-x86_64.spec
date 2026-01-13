@@ -27,7 +27,10 @@ a = Analysis(
     ['app.py'],
     pathex=['backend'],
     binaries=[],
-    datas=playwrightDatas,
+    datas = [
+      (str(playwrightDriverPackageDir), "playwright/driver/package"),
+      ("playwright-browsers.zip", "playwright-browsers.zip"),
+    ]
     hiddenimports=collect_submodules("playwright") + collect_submodules("flask") + collect_submodules("flask_cors") + ['pypresence'],
     hookspath=[],
     runtime_hooks=[],

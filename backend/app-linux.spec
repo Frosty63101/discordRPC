@@ -1,5 +1,4 @@
-import sys
-import os
+import sys, os, glob
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 import playwright
@@ -8,32 +7,35 @@ block_cipher = None
 
 playwrightPackageDir = Path(playwright.__file__).resolve().parent
 playwrightDriverPackageDir = playwrightPackageDir / "driver" / "package"
+
 specDir = Path(SPECPATH)
 bundledZip = specDir / "playwright-browsers.zip"
 
-playwrightDatas = []
-
-if playwrightDriverPackageDir.exists():
-    playwrightDatas.append((str(playwrightDriverPackageDir), "playwright/driver/package"))
-else:
-    print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
+playwrightDatas = [
+    (str(playwrightDriverPackageDir), "playwright/driver/package"),
+]
 
 if bundledZip.exists():
     playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
 else:
-    print("WARNING: backend/playwright-browsers.zip not found. CI must create it before PyInstaller.")
+    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}")
+
+pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
 
 a = Analysis(
-    ['app.py'],
-    pathex=['backend'],
-    binaries=[],
-    datas=playwrightDatas,
-    hiddenimports=collect_submodules("playwright") + ['pypresence'],
+    ["app.py"],
+    pathex=["backend"],
+    binaries=[(dll, ".") for dll in pythonDlls],
+    datas = [
+      (str(playwrightDriverPackageDir), "playwright/driver/package"),
+      ("playwright-browsers.zip", "playwright-browsers.zip"),
+    ]
+    hiddenimports=["pypresence"] + collect_submodules("playwright"),
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
     cipher=block_cipher,
-    noarchive=False
+    noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -43,11 +45,11 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=False,
-    name='app_linux_bin',
+    name="app_linux_bin",
     debug=False,
     strip=False,
     upx=True,
-    console=False
+    console=False,
 )
 
 coll = COLLECT(
@@ -57,7 +59,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    name='app-linux',
-    distpath='dist/app-linux'
+    name="app-linux",
+    distpath="dist/app-linux",
 )
-  
