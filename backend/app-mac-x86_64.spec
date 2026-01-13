@@ -42,11 +42,11 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=False,
-    name="app_linux_bin",
+    name='app_mac_bin_x86_64',
     debug=False,
     strip=False,
     upx=True,
-    console=False,
+    console=False
 )
 
 coll = COLLECT(
@@ -56,6 +56,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    name="app-linux",
-    distpath="dist/app-linux",
+    name='app_mac_x86_64',
+    distpath='dist/app_mac_x86_64'
 )

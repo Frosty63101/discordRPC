@@ -34,22 +34,21 @@ jobs:
           set PLAYWRIGHT_BROWSERS_PATH=0 && python -m playwright install chromium
       
       - name: Zip Playwright browsers for bundling
+        shell: pwsh
         run: |
           cd backend
-          python - <<PY
-          import playwright, pathlib, zipfile
-          browsers = pathlib.Path(playwright.__file__).resolve().parent / "driver" / "package" / ".local-browsers"
-          outZip = pathlib.Path("playwright-browsers.zip")
-          if not browsers.exists():
-              raise SystemExit(f"Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?")
-          with zipfile.ZipFile(outZip, "w", compression=zipfile.ZIP_DEFLATED) as z:
-              for p in browsers.rglob("*"):
-                  if p.is_file():
-                      z.write(p, p.relative_to(browsers))
-          print("Wrote", outZip)
-          PY
-          cd ..
-  
+          python -c "import playwright, pathlib, zipfile; browsers = pathlib.Path(playwright.__file__).resolve().parent / 'driver' / 'package' / '.local-browsers'; outZip = pathlib.Path('playwright-browsers.zip'); 
+          (browsers.exists() or (_ for _ in ()).throw(SystemExit(f'Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?'))); 
+          z=zipfile.ZipFile(outZip,'w',compression=zipfile.ZIP_DEFLATED); 
+          [z.write(str(p), str(p.relative_to(browsers))) for p in browsers.rglob('*') if p.is_file()]; 
+          z.close(); 
+          print('Wrote', outZip)"
+        
+      - name: Remove Playwright .local-browsers (keeps build small)
+        shell: pwsh
+        run: |
+          python -c "import playwright, pathlib, shutil; browsers = pathlib.Path(playwright.__file__).resolve().parent / 'driver' / 'package' / '.local-browsers'; print('Deleting:', browsers); shutil.rmtree(browsers, ignore_errors=True); print('Exists after delete?', browsers.exists())"
+        
 
       - name: Build Python binary
         run: pyinstaller backend/app.spec
