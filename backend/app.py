@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 import threading
@@ -31,23 +32,22 @@ import zipfile
 
 def setPlaywrightBrowserPathForPyinstaller():
     """
-    If we're running from a PyInstaller build:
-      - Extract bundled playwright-browsers.zip to a writable per-user cache dir
-      - Point PLAYWRIGHT_BROWSERS_PATH at that extracted directory
-    This works on macOS/Linux/Windows.
+    PyInstaller-safe Playwright browsers setup.
+
+    - Never reads/extracts directly from sys._MEIPASS (Windows can deny access).
+    - Copies playwright-browsers.zip to a writable cache dir first.
+    - Extracts once, using a marker file.
+    - Sets PLAYWRIGHT_BROWSERS_PATH to the extracted folder (the folder containing chromium-*).
     """
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
 
-    extractedRoot = sys._MEIPASS
+    meipassDir = sys._MEIPASS
+    bundledZipInMeipass = os.path.join(meipassDir, "playwright-browsers.zip")
+    if not os.path.exists(bundledZipInMeipass):
+        return  # zip not bundled, nothing to do
 
-    # The zip will be bundled at: <_MEIPASS>/playwright-browsers.zip
-    bundledZipPath = os.path.join(extractedRoot, "playwright-browsers.zip")
-    if not os.path.exists(bundledZipPath):
-        # If you choose not to use zip on Windows later, this is fine.
-        return
-
-    # Per-user cache location (writable)
+    # Pick a writable cache directory
     if sys.platform == "win32":
         baseCacheDir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":
@@ -55,33 +55,32 @@ def setPlaywrightBrowserPathForPyinstaller():
     else:
         baseCacheDir = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
 
-    targetDir = os.path.join(baseCacheDir, "discordrpc-playwright-browsers")
+    appCacheDir = os.path.join(baseCacheDir, "discordrpc-playwright")
+    extractedBrowsersDir = os.path.join(appCacheDir, "browsers")   # contains chromium-xxxx folders
+    markerPath = os.path.join(appCacheDir, ".extracted-ok")
+    cachedZipPath = os.path.join(appCacheDir, "playwright-browsers.zip")
 
-    # Use a marker file so we only unzip once
-    markerPath = os.path.join(targetDir, ".extracted-ok")
+    os.makedirs(appCacheDir, exist_ok=True)
 
     if not os.path.exists(markerPath):
-        os.makedirs(targetDir, exist_ok=True)
+        # Blow away any partial extraction
+        if os.path.exists(extractedBrowsersDir):
+            shutil.rmtree(extractedBrowsersDir, ignore_errors=True)
+        os.makedirs(extractedBrowsersDir, exist_ok=True)
 
-        # Clean partial extracts if any
-        # (optional but helps if extraction is interrupted)
-        try:
-            for rootDir, dirNames, fileNames in os.walk(targetDir):
-                for fileName in fileNames:
-                    if fileName != ".extracted-ok":
-                        pass
-        except Exception:
-            pass
+        # Copy zip out of _MEIPASS first (THIS is the key fix)
+        shutil.copy2(bundledZipInMeipass, cachedZipPath)
 
-        with zipfile.ZipFile(bundledZipPath, "r") as zipRef:
-            zipRef.extractall(targetDir)
+        # Extract from the copied zip
+        with zipfile.ZipFile(cachedZipPath, "r") as zipRef:
+            zipRef.extractall(extractedBrowsersDir)
 
+        # Write marker to prevent re-extract every run
         with open(markerPath, "w", encoding="utf-8") as f:
-            f.write("ok")
+            f.write(str(int(time.time())))
 
-    # IMPORTANT: Playwright expects PLAYWRIGHT_BROWSERS_PATH to point at the directory
-    # that CONTAINS the browser folders (chromium-XXXX, firefox-XXXX, etc).
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = targetDir
+    # Playwright expects this to point to the directory containing chromium-* folders
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = extractedBrowsersDir
 
 setPlaywrightBrowserPathForPyinstaller()
 
