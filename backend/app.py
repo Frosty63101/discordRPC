@@ -264,6 +264,202 @@ def parseStorygraphStartedDate(containerDiv):
     match = re.search(r"\bStarted\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\b", allText)
     return match.group(1) if match else None
 
+def cleanText(textValue):
+    """Collapse whitespace + strip. Safe for None."""
+    if not textValue:
+        return ""
+    return " ".join(textValue.split()).strip()
+
+def parseIsbnFromIsbnUid(isbnUidText):
+    """
+    StoryGraph shows: 'ISBN/UID: None' or 'ISBN/UID: 978...'
+    Sometimes it's ISBN10, sometimes ISBN13, sometimes some other UID.
+    We return:
+      - isbn13 if we can find 13-digit ISBN (or 13 with X at end, rare)
+      - isbn10 if we can find 10-char ISBN (digits/X)
+      - rawIsbnUid = cleaned original field (or None)
+    """
+    isbnUidText = cleanText(isbnUidText)
+    if not isbnUidText or isbnUidText.lower() == "none":
+        return None, None, None
+
+    # Remove label if caller passed full line like "ISBN/UID: 123"
+    isbnUidText = re.sub(r"^isbn\s*/\s*uid\s*:\s*", "", isbnUidText, flags=re.IGNORECASE).strip()
+
+    # Pull candidates: allow digits and X/x, ignore hyphens/spaces
+    normalized = re.sub(r"[^0-9Xx]", "", isbnUidText)
+
+    isbn13 = None
+    isbn10 = None
+
+    # Prefer ISBN-13 if present
+    match13 = re.search(r"\b(\d{13})\b", normalized)
+    if match13:
+        isbn13 = match13.group(1)
+
+    # Then try ISBN-10 (9 digits + digit/X)
+    match10 = re.search(r"\b(\d{9}[0-9Xx])\b", normalized)
+    if match10:
+        isbn10 = match10.group(1).upper()
+
+    # If it's neither, keep raw as a UID (still useful)
+    rawIsbnUid = isbnUidText if isbnUidText else None
+
+    return isbn13, isbn10, rawIsbnUid
+
+def extractEditionInfoField(editionInfoDiv, fieldName):
+    """
+    In your HTML:
+      <div class="hidden edition-info ...">
+        <p class="text-xs"><span class="font-semibold">ISBN/UID:</span> None</p>
+        <p class="text-xs"><span class="font-semibold">Format:</span> Digital</p>
+        ...
+      </div>
+
+    We find the <p> whose <span> label matches fieldName, then return the trailing text.
+    """
+    if not editionInfoDiv:
+        return ""
+
+    for pTag in editionInfoDiv.find_all("p"):
+        labelSpan = pTag.find("span", class_=re.compile(r"\bfont-semibold\b"))
+        if not labelSpan:
+            continue
+
+        labelText = cleanText(labelSpan.get_text())
+        # labelText will be like "ISBN/UID:" including colon
+        if labelText.lower().startswith(fieldName.lower()):
+            # Get entire p text, subtract the label portion
+            fullText = cleanText(pTag.get_text(" ", strip=True))
+            # Remove the label at the front
+            valueText = re.sub(rf"^{re.escape(labelText)}\s*", "", fullText).strip()
+            return valueText
+
+    return ""
+
+def parseStoryGraphCurrentReadsHtml(htmlText: str) -> list[dict]:
+    """
+    Parse StoryGraph 'currently reading' HTML into a list of book dicts.
+
+    Output keys are designed to be easy to normalize later:
+      - bookId, title, author
+      - bookPath (relative /books/<uuid>)
+      - coverUrl
+      - startedDate (e.g. "Jan 13, 2026")
+      - seriesName, seriesNumber
+    """
+    soup = BeautifulSoup(htmlText, "html.parser")
+    parsedBooks = []
+
+    # Each current read is typically: <div class="book-pane" data-book-id="...">
+    bookPanes = soup.select("div.book-pane[data-book-id]")
+
+    for bookPane in bookPanes:
+        bookId = (bookPane.get("data-book-id") or "").strip()
+
+        # Title link like: <h3><a href="/books/<uuid>">Title</a></h3>
+        titleLink = bookPane.select_one('h3 a[href^="/books/"]')
+        title = titleLink.get_text(strip=True) if titleLink else None
+        bookPath = titleLink.get("href") if titleLink else None
+
+        # First author link like: <a href="/authors/...">Author</a>
+        authorLink = bookPane.select_one('a[href^="/authors/"]')
+        author = authorLink.get_text(strip=True) if authorLink else None
+
+        # Series info links like: <a href="/series/...">Series Name</a> <a ...>#2</a>
+        seriesLinks = bookPane.select('p a[href^="/series/"]')
+        seriesName = seriesLinks[0].get_text(strip=True) if len(seriesLinks) >= 1 else None
+        seriesNumber = seriesLinks[1].get_text(strip=True) if len(seriesLinks) >= 2 else None
+
+        # Cover image (often the first img in the pane)
+        coverImg = bookPane.select_one("img")
+        coverUrl = coverImg.get("src") if coverImg else None
+
+        # Find "Started Jan 13, 2026"
+        startedDate = None
+        for pTag in bookPane.select("p"):
+            textValue = pTag.get_text(" ", strip=True)
+            if "Started " in textValue:
+                startedDate = textValue.split("Started ", 1)[1].strip()
+                break
+
+        parsedBooks.append({
+            "bookId": bookId,
+            "title": title,
+            "author": author,
+            "bookPath": bookPath,          # <-- IMPORTANT
+            "coverUrl": coverUrl,
+            "startedDate": startedDate,    # <-- IMPORTANT
+            "seriesName": seriesName,
+            "seriesNumber": seriesNumber,
+        })
+
+    return parsedBooks
+
+
+def chooseStableBookKey(storygraphBook):
+    """
+    Pick a stable key to use as our internal 'isbn' field.
+    Priority:
+      1) ISBN-13
+      2) ISBN-10
+      3) StoryGraph UUID (bookId)
+      4) synthetic fallback
+    """
+    isbn13 = (storygraphBook.get("isbn13") or "").strip()
+    if isbn13:
+        return isbn13
+
+    isbn10 = (storygraphBook.get("isbn10") or "").strip()
+    if isbn10:
+        return isbn10
+
+    bookId = (storygraphBook.get("bookId") or "").strip()
+    if bookId:
+        return f"sg-{bookId}"
+
+    # last resort: title+author (not guaranteed unique, but better than crashing)
+    title = (storygraphBook.get("title") or "unknown").strip()
+    author = (storygraphBook.get("author") or "unknown").strip()
+    return f"sg-noid-{title}-{author}".lower()
+
+
+def normalizeStorygraphBooksToDict(storygraphBooksList):
+    """
+    Convert StoryGraph list -> dict matching the Goodreads-like shape your app expects.
+
+    Your app expects each entry to have:
+      isbn, title, author, coverArt, startDate, platform, bookUrl
+    """
+    normalized = {}
+
+    for book in (storygraphBooksList or []):
+        stableKey = chooseStableBookKey(book)
+
+        # StoryGraph gives us bookPath; convert to full URL if needed
+        bookPath = (book.get("bookPath") or "").strip()
+        if bookPath.startswith("/"):
+            fullBookUrl = f"https://app.thestorygraph.com{bookPath}"
+        else:
+            fullBookUrl = bookPath or None
+
+        normalized[stableKey] = {
+            "isbn": stableKey,
+            "title": book.get("title") or "Unknown Title",
+            "author": book.get("author") or "Unknown Author",
+            "coverArt": sanitizeCover(book.get("coverUrl")),
+            "startDate": book.get("startedDate"),   # <-- FIX: startedDate -> startDate
+            "platform": "storygraph",
+            "bookUrl": fullBookUrl,                 # <-- FIX: bookPath -> bookUrl
+
+            # extras (optional but nice for UI/debugging)
+            "bookId": book.get("bookId"),
+            "series": book.get("seriesName"),
+            "seriesNumber": book.get("seriesNumber"),
+        }
+
+    return normalized
+
 # -------------------------
 # Common scraping helpers
 # -------------------------
@@ -457,64 +653,21 @@ def get_books():
                 log("Failed to fetch StoryGraph HTML (empty).")
                 return None
     
-            soup = BeautifulSoup(htmlText, "html.parser")
-    
-            titleLinks = soup.select('a[href^="/books/"]')
-            if not titleLinks:
-                updateStatus("Error", "No StoryGraph book links found (rendered HTML)")
-                log("No StoryGraph book links found in Playwright HTML.")
+            storygraphList = parseStoryGraphCurrentReadsHtml(htmlText)
+            if not storygraphList:
+                updateStatus("Error", "Parsed 0 books from StoryGraph")
+                log("Parsed 0 books from StoryGraph.")
                 return None
 
-            found = {}
-            for titleLink in titleLinks:
-                try:
-                    title = safeText(titleLink) or "Unknown Title"
-                    bookHref = titleLink.get("href")
-                    bookId = extractStorygraphBookId(bookHref)
-
-                    container = titleLink.find_parent()  # start local
-                    if container:
-                        # walk upward a bit to grab a larger block if needed
-                        for _ in range(4):
-                            if container and container.name in ("article", "section", "div"):
-                                break
-                            container = container.parent
-
-                    author = "Unknown Author"
-                    coverArt = None
-                    startDate = None
-
-                    if container:
-                        authorLink = container.select_one('a[href^="/authors/"]')
-                        author = safeText(authorLink) or author
-
-                        coverImg = container.select_one("img")
-                        coverArt = coverImg.get("src") if coverImg else None
-
-                        startDate = parseStorygraphStartedDate(container)
-
-                    bookKey = bookId if bookId else f"nobookid-{title}-{author}"
-                    found[bookKey] = {
-                        "isbn": bookKey,
-                        "bookId": bookId,
-                        "title": title,
-                        "author": author,
-                        "coverArt": coverArt,
-                        "startDate": startDate,
-                        "platform": "storygraph",
-                        "bookUrl": f"https://app.thestorygraph.com{bookHref}" if bookHref else url
-                    }
-                except Exception as rowErr:
-                    log(f"Failed to parse a StoryGraph book block: {rowErr}")
-                    updateStatus("Error", f"Failed to parse a StoryGraph book block: {rowErr}")
-
-            if not found:
-                updateStatus("Error", "Parsed 0 StoryGraph books")
-                log("Parsed 0 StoryGraph books.")
+            normalizedDict = normalizeStorygraphBooksToDict(storygraphList)
+            if not normalizedDict:
+                updateStatus("Error", "Parsed 0 books from StoryGraph (post-normalize)")
+                log("Parsed 0 books from StoryGraph (post-normalize).")
                 return None
 
-            updateStatus("Active", f"Fetched {len(found)} books (StoryGraph)")
-            return found
+            updateStatus("Active", f"Fetched {len(normalizedDict)} books (StoryGraph)")
+            return normalizedDict
+
 
         except Exception as e:
             updateStatus("Error", f"Error fetching books: {e}")
@@ -809,7 +962,7 @@ def run_presence():
 
                         if platform == "storygraph":
                             largeText = "Reading via StoryGraph"
-                            buttonUrl = book.get("bookUrl") or f"https://storygraph.com/currently-reading/{storygraphUsername}"
+                            buttonUrl = book.get("bookUrl") or f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
                             buttonLabel = "View on StoryGraph"
                         else:
                             largeText = "Reading via Goodreads"
