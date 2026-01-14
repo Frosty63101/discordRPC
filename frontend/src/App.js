@@ -51,21 +51,26 @@ function App() {
     }, []);
 
     const saveConfig = useCallback((nextConfig) => {
-        const cfgToSave = nextConfig ?? config;
-        if (!cfgToSave) return Promise.resolve(false);
-
-        return fetch(`${apiBaseUrl}/api/config/save`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cfgToSave),
+      const cfgToSave = nextConfig ?? config;
+      if (!cfgToSave) return Promise.resolve(false);
+    
+      return fetch(`${apiBaseUrl}/api/config/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfgToSave),
+      })
+        .then(async (res) => {
+          if (!res.ok) throw new Error('save failed');
+          // Re-fetch the canonical config from backend
+          const fresh = await fetch(`${apiBaseUrl}/api/config`).then(r => r.json());
+          setConfig(fresh);
+          showMessage('✅ Config saved');
+          return true;
         })
-            .then(() => {
-                showMessage('✅ Config saved');
-                return true;
-            })
-            .then(() => fetchStatus())
-            .catch(() => false);
+        .then(() => fetchStatus())
+        .catch(() => false);
     }, [config, fetchStatus]);
+    
 
     const updateBook = useCallback((isbn) => {
         setSelectedISBN(isbn);
@@ -217,20 +222,39 @@ function App() {
             )}
 
             {platform === 'storygraph' && (
-                <>
-                    <label>StoryGraph Username:</label>
-                    <input
-                        className="input"
-                        value={config.storygraph_username || ''}
-                        onChange={e => setConfig({ ...config, storygraph_username: e.target.value })}
-                        onBlur={() => {
-                            saveConfig();
-                            fetchBooks();
-                            fetchStatus();
-                        }}
-                    />
-                </>
+              <>
+                <label>StoryGraph Username:</label>
+                <input
+                  className="input"
+                  value={config.storygraph_username || ''}
+                  onChange={e => setConfig({ ...config, storygraph_username: e.target.value })}
+                  onBlur={() => {
+                    saveConfig();
+                    fetchBooks();
+                    fetchStatus();
+                  }}
+                />
+            
+                <label>StoryGraph Login Cookie (remember_user_token):</label>
+                <input
+                  className="input"
+                  value={config.storygraph_remember_user_token || ''}
+                  placeholder="Paste remember_user_token here"
+                  onChange={e => setConfig({ ...config, storygraph_remember_user_token: e.target.value })}
+                  onBlur={() => {
+                    saveConfig();
+                    fetchBooks();
+                    fetchStatus();
+                  }}
+                />
+            
+                <small style={{ display: 'block', marginTop: '6px', color: '#666' }}>
+                  This is required if your StoryGraph profile/currently-reading list is private. Paste the value of the
+                  <code style={{ marginLeft: '6px' }}>remember_user_token</code> cookie from app.thestorygraph.com.
+                </small>
+              </>
             )}
+            
 
             <label>Update Interval (seconds):</label>
             <input
@@ -249,13 +273,16 @@ function App() {
                 className="input"
                 value={selectedISBN}
                 onChange={e => {
-                    const next = e.target.value;
-                    updateBook(next);
-                    // Also refresh local config's current_isbn so the UI and backend stay aligned
-                    const updated = { ...config, current_isbn: next };
-                    setConfig(updated);
-                    saveConfig(updated);
+                  const next = e.target.value;
+                  setSelectedISBN(next);
+                
+                  // Keep local UI consistent
+                  setConfig(prev => ({ ...prev, current_isbn: next }));
+                
+                  // Backend selection endpoint already saves config
+                  updateBook(next);
                 }}
+                
             >
                 {Object.entries(books).map(([isbn, book]) => (
                     <option key={isbn} value={isbn}>

@@ -114,6 +114,7 @@ DEFAULT_CONFIG = {
     "goodreads_id": "your_goodreads_id_here",
     "discord_app_id": "1356666997760462859",
     "storygraph_username": "your_storygraph_username_here",
+    "storygraph_remember_user_token": "PASTE_VALUE_HERE",
     "current_isbn": None,
     "minimizeToTray": True,
     "startOnStartup": False,
@@ -206,10 +207,42 @@ def save_config_internal():
 
 CONFIG = load_config()
 
+def normalizeConfigUpdateKeys(updateDict):
+    """
+    Accept multiple frontend naming styles and normalize to the backend's keys.
+    """
+    normalized = dict(updateDict or {})
+
+    # Allow camelCase or other variants from the UI
+    if "currentIsbn" in normalized and "current_isbn" not in normalized:
+        normalized["current_isbn"] = normalized["currentIsbn"]
+    if "currentISBN" in normalized and "current_isbn" not in normalized:
+        normalized["current_isbn"] = normalized["currentISBN"]
+
+    if "storygraphRememberUserToken" in normalized and "storygraph_remember_user_token" not in normalized:
+        normalized["storygraph_remember_user_token"] = normalized["storygraphRememberUserToken"]
+
+    return normalized
+
+def applyConfigToRuntimeState():
+    global currentIsbn, currentBook
+
+    with configLock:
+        currentIsbn = CONFIG.get("current_isbn")
+
+    with booksLock:
+        if currentIsbn and currentIsbn in books:
+            currentBook = books[currentIsbn]
+        else:
+            currentBook = None
+
 # Current selection state (protected by booksLock)
 currentBook = None
 currentIsbn = CONFIG.get("current_isbn")
 books = {}
+
+applyConfigToRuntimeState()
+
 
 @app.errorhandler(Exception)
 def handle_unhandled_error(e):
@@ -332,6 +365,7 @@ def get_books():
                         "platform": "goodreads",
                         "bookUrl": f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
                     }
+                    log(f"Found book: {title} by {author} (ISBN: {isbn})")
                 except Exception as rowErr:
                     log(f"Failed to parse a book row: {rowErr}")
                     updateStatus("Error", f"Failed to parse a book row: {rowErr}")
@@ -356,133 +390,118 @@ def get_books():
                 updateStatus("Error", "StoryGraph username missing")
                 log("StoryGraph username missing in config.")
                 return None
-
+    
             url = f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
-
-            # Pull cookie from config if present
-            rememberUserToken = ""
+    
             with configLock:
                 rememberUserToken = (CONFIG.get("storygraph_remember_user_token") or "").strip()
-
+    
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://app.thestorygraph.com/",
-                "Connection": "keep-alive",
             }
-
+    
             updateStatus("Info", f"Fetching books from {url}")
             log(f"Fetching books from {url}")
+    
+            # ALWAYS use Playwright for StoryGraph
+            import time as timeModule
 
-            response = requests.get(url, headers=headers, timeout=10)
-
+            from playwright.sync_api import sync_playwright
+    
             htmlText = None
-
-            if response.status_code == 200:
-                htmlText = response.text
-            elif response.status_code == 403:
-                # Fall back to browser-rendered HTML (bypasses the anti-bot 403)
-                updateStatus("Info", "StoryGraph blocked requests (403). Using headless browser...")
-                log("StoryGraph returned 403; falling back to Playwright...")
-
-                import time as timeModule
-
-                from playwright.sync_api import sync_playwright
-
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
-
-                    context = browser.new_context(
-                        viewport={"width": 1280, "height": 720},
-                        user_agent=headers["User-Agent"],
+    
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    viewport={"width": 1280, "height": 720},
+                    user_agent=headers["User-Agent"],
+                )
+    
+                if rememberUserToken and rememberUserToken.strip() and rememberUserToken.strip() != "PASTE_VALUE_HERE":
+                    context.add_cookies([{
+                        "name": "remember_user_token",
+                        "value": rememberUserToken,
+                        "domain": "app.thestorygraph.com",
+                        "path": "/",
+                        "httpOnly": True,
+                        "secure": True,
+                        "sameSite": "Lax",
+                    }])
+    
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    
+                # If StoryGraph redirects to login, stop and report clearly
+                if "/users/sign_in" in page.url:
+                    updateStatus(
+                        "Error",
+                        "StoryGraph requires login or list is private. Add remember_user_token or make profile public."
                     )
-
-                    # If cookie provided, set it before navigation
-                    if rememberUserToken:
-                        context.add_cookies([{
-                            "name": "remember_user_token",
-                            "value": rememberUserToken,
-                            "domain": "app.thestorygraph.com",
-                            "path": "/",
-                            "httpOnly": True,
-                            "secure": True,
-                            "sameSite": "Lax",
-                        }])
-
-                    page = context.new_page()
-                    page.goto(url, wait_until="networkidle", timeout=30000)
-
-                    # Scroll until page stops growing (lazy-loading)
-                    scrollPauseSeconds = 2
-                    maxScrolls = 60
-
-                    lastHeight = page.evaluate("document.body.scrollHeight")
-                    scrollCount = 0
-
-                    while True:
-                        scrollCount += 1
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        timeModule.sleep(scrollPauseSeconds)
-
-                        newHeight = page.evaluate("document.body.scrollHeight")
-                        if newHeight == lastHeight:
-                            break
-
-                        lastHeight = newHeight
-                        if scrollCount >= maxScrolls:
-                            break
-
-                    htmlText = page.content()
+                    log(f"StoryGraph redirected to sign-in: {page.url}")
                     browser.close()
-            else:
-                msg = f"Failed to fetch books: {response.status_code} {response.reason}"
-                updateStatus("Error", msg)
-                log(msg)
-                return None
-
+                    return None
+    
+                # Let JS render
+                page.wait_for_timeout(1500)
+    
+                # Scroll a bit to trigger lazy loading
+                for _ in range(10):
+                    page.mouse.wheel(0, 2000)
+                    timeModule.sleep(0.5)
+    
+                htmlText = page.content()
+                browser.close()
+    
             if not htmlText:
                 updateStatus("Error", "Failed to fetch StoryGraph HTML")
                 log("Failed to fetch StoryGraph HTML (empty).")
                 return None
-
+    
             soup = BeautifulSoup(htmlText, "html.parser")
-
-            # Your existing selector (may be brittle, but keep it for now)
-            bookDivs = soup.select("div.grid.grid-cols-12.gap-4.p-4")
-            if not bookDivs:
-                updateStatus("Error", "No book divs found")
-                log("No book divs found in the StoryGraph HTML.")
+    
+            titleLinks = soup.select('a[href^="/books/"]')
+            if not titleLinks:
+                updateStatus("Error", "No StoryGraph book links found (rendered HTML)")
+                log("No StoryGraph book links found in Playwright HTML.")
                 return None
 
             found = {}
-            for bookDiv in bookDivs:
+            for titleLink in titleLinks:
                 try:
-                    titleLink = bookDiv.select_one('h3 a[href^="/books/"]')
-                    bookHref = titleLink.get("href") if titleLink else None
+                    title = safeText(titleLink) or "Unknown Title"
+                    bookHref = titleLink.get("href")
                     bookId = extractStorygraphBookId(bookHref)
 
-                    title = safeText(titleLink) or "Unknown Title"
+                    container = titleLink.find_parent()  # start local
+                    if container:
+                        # walk upward a bit to grab a larger block if needed
+                        for _ in range(4):
+                            if container and container.name in ("article", "section", "div"):
+                                break
+                            container = container.parent
 
-                    authorLink = bookDiv.select_one('a[href^="/authors/"]')
-                    author = safeText(authorLink) or "Unknown Author"
+                    author = "Unknown Author"
+                    coverArt = None
+                    startDate = None
 
-                    coverImg = bookDiv.select_one("img")
-                    coverArt = coverImg.get("src") if coverImg else None
+                    if container:
+                        authorLink = container.select_one('a[href^="/authors/"]')
+                        author = safeText(authorLink) or author
 
-                    startDate = parseStorygraphStartedDate(bookDiv)
+                        coverImg = container.select_one("img")
+                        coverArt = coverImg.get("src") if coverImg else None
+
+                        startDate = parseStorygraphStartedDate(container)
 
                     bookKey = bookId if bookId else f"nobookid-{title}-{author}"
-
                     found[bookKey] = {
-                        "isbn": bookKey,  # keep API field name stable for the UI
+                        "isbn": bookKey,
                         "bookId": bookId,
                         "title": title,
                         "author": author,
                         "coverArt": coverArt,
                         "startDate": startDate,
                         "platform": "storygraph",
-                        # FIXED: use correct domain
                         "bookUrl": f"https://app.thestorygraph.com{bookHref}" if bookHref else url
                     }
                 except Exception as rowErr:
@@ -591,24 +610,36 @@ def get_config():
 def update_config():
     try:
         data = request.get_json(silent=True) or {}
+        data = normalizeConfigUpdateKeys(data)
+
         with configLock:
             CONFIG.update(data)
+
+        applyConfigToRuntimeState()
+
         updateStatus("Active", "Config updated (unsaved)")
-        return jsonify({"message": "Config updated successfully."})
+        return jsonify({"message": "Config updated successfully.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
     except Exception as e:
         return safeJsonifyError(e, 500, "update_config")
+
 
 @app.route("/api/config/save", methods=["POST"])
 def save_config():
     try:
         updatedConfig = request.get_json(silent=True) or {}
+        updatedConfig = normalizeConfigUpdateKeys(updatedConfig)
+
         with configLock:
             CONFIG.update(updatedConfig)
+
         save_config_internal()
+        applyConfigToRuntimeState()
+
         updateStatus("Active", "Config saved")
-        return jsonify({"message": "Config saved successfully."})
+        return jsonify({"message": "Config saved successfully.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
     except Exception as e:
         return safeJsonifyError(e, 500, "save_config")
+
 
 # -------------------------
 # Book select endpoints
@@ -628,7 +659,7 @@ def select_book():
                     CONFIG["current_isbn"] = isbn
                 save_config_internal()
                 updateStatus("Active", f"Book selected: {isbn}")
-                return jsonify({"message": "Book selected."})
+                return jsonify({"message": "Book selected.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
             else:
                 updateStatus("Error", f"Invalid ISBN selection: {isbn}")
                 return jsonify({"error": "Invalid ISBN."}), 400
@@ -785,17 +816,22 @@ def run_presence():
                             buttonUrl = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
                             buttonLabel = "View Goodreads"
 
-                        presence.update(
-                            details=book.get("title") or "Unknown Title",
-                            state=f"by {book.get('author') or 'Unknown Author'}",
-                            large_image=largeImage,
-                            large_text=largeText,
-                            start=startTs,
-                            buttons=[{
-                                "label": buttonLabel,
-                                "url": buttonUrl
-                            }]
-                        )
+                        log(f"Updating presence: title={book.get('title')} author={book.get('author')} startTs={startTs} platform={platform}")
+                        try:
+                            presence.update(
+                                details=book.get("title") or "Unknown Title",
+                                state=f"by {book.get('author') or 'Unknown Author'}",
+                                large_image=largeImage,
+                                large_text=largeText,
+                                start=startTs,
+                                buttons=[{
+                                    "label": buttonLabel,
+                                    "url": buttonUrl
+                                }]
+                            )
+                        except Exception as updateErr:
+                            log(f"Failed to update presence: {updateErr}")
+                            updateStatus("Error", f"Failed to update presence: {updateErr}")
 
                         updateStatus("Active", f"Presence updated for '{book.get('title')}'")
                     else:
