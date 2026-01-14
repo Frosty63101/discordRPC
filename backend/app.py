@@ -30,6 +30,30 @@ import sys
 import zipfile
 
 
+def findBundledPlaywrightZip(meipassDir):
+    """
+    Handles:
+      - <_MEIPASS>/playwright-browsers.zip (correct file)
+      - <_MEIPASS>/playwright-browsers.zip/ (wrong folder) containing the zip
+    """
+    directPath = os.path.join(meipassDir, "playwright-browsers.zip")
+
+    if os.path.isfile(directPath):
+        return directPath
+
+    if os.path.isdir(directPath):
+        nestedPath = os.path.join(directPath, "playwright-browsers.zip")
+        if os.path.isfile(nestedPath):
+            return nestedPath
+
+        for rootDir, _, fileNames in os.walk(directPath):
+            for fileName in fileNames:
+                if fileName.lower() == "playwright-browsers.zip":
+                    return os.path.join(rootDir, fileName)
+
+    return None
+
+
 def setPlaywrightBrowserPathForPyinstaller():
     """
     PyInstaller-safe Playwright browsers setup.
@@ -43,7 +67,9 @@ def setPlaywrightBrowserPathForPyinstaller():
         return
 
     meipassDir = sys._MEIPASS
-    bundledZipInMeipass = os.path.join(meipassDir, "playwright-browsers.zip")
+    bundledZipInMeipass = findBundledPlaywrightZip(meipassDir)
+    if not bundledZipInMeipass:
+        return
     if not os.path.exists(bundledZipInMeipass):
         return  # zip not bundled, nothing to do
 

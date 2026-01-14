@@ -29,9 +29,8 @@ else:
 
 # 2) Bundle zipped browsers (preferred)
 if bundledZip.exists():
-    # Put it at the top level in _MEIPASS so your runtime code finds it:
-    # os.path.join(sys._MEIPASS, "playwright-browsers.zip")
-    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
+    # Copy the zip FILE into the root of the bundle (_MEIPASS)
+    playwrightDatas.append((str(bundledZip), "."))
 else:
     print(f"WARNING: playwright-browsers.zip not found at {bundledZip}. Did CI create it in backend/?")
 

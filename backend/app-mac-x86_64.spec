@@ -15,10 +15,12 @@ playwrightDatas = [
     (str(playwrightDriverPackageDir), "playwright/driver/package"),
 ]
 
+# 2) Bundle zipped browsers (preferred)
 if bundledZip.exists():
-    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
+    # Copy the zip FILE into the root of the bundle (_MEIPASS)
+    playwrightDatas.append((str(bundledZip), "."))
 else:
-    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}")
+    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}. Did CI create it in backend/?")
 
 pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dll"))
 

@@ -16,10 +16,12 @@ if playwrightDriverPackageDir.exists():
 else:
     print(f"WARNING: Playwright driver package not found: {playwrightDriverPackageDir}")
 
+# 2) Bundle zipped browsers (preferred)
 if bundledZip.exists():
-    playwrightDatas.append((str(bundledZip), "playwright-browsers.zip"))
+    # Copy the zip FILE into the root of the bundle (_MEIPASS)
+    playwrightDatas.append((str(bundledZip), "."))
 else:
-    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}")
+    print(f"WARNING: playwright-browsers.zip not found at {bundledZip}. Did CI create it in backend/?")
 
 a = Analysis(
     ["app.py"],
