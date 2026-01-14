@@ -13,6 +13,7 @@ jobs:
     defaults:
       run:
         shell: cmd
+
     steps:
       - uses: actions/checkout@v3
 
@@ -29,26 +30,29 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r backend/requirements.txt
 
-      - name: Install Playwright Chromium (bundled)
+      - name: Install Playwright Chromium into controlled folder
+        shell: pwsh
         run: |
-          set PLAYWRIGHT_BROWSERS_PATH=0 && python -m playwright install chromium
-      
+          $env:PLAYWRIGHT_BROWSERS_PATH = "$(Resolve-Path backend)/.pw-browsers"
+          python -m playwright install chromium
+          Write-Host "Installed browsers to $env:PLAYWRIGHT_BROWSERS_PATH"
+
       - name: Zip Playwright browsers for bundling
         shell: pwsh
         run: |
-          cd backend
-          python -c "import playwright, pathlib, zipfile; browsers = pathlib.Path(playwright.__file__).resolve().parent / 'driver' / 'package' / '.local-browsers'; outZip = pathlib.Path('playwright-browsers.zip'); 
-          (browsers.exists() or (_ for _ in ()).throw(SystemExit(f'Missing {browsers}. Did you install with PLAYWRIGHT_BROWSERS_PATH=0?'))); 
-          z=zipfile.ZipFile(outZip,'w',compression=zipfile.ZIP_DEFLATED); 
-          [z.write(str(p), str(p.relative_to(browsers))) for p in browsers.rglob('*') if p.is_file()]; 
-          z.close(); 
-          print('Wrote', outZip)"
-        
-      - name: Remove Playwright .local-browsers (keeps build small)
+          $browsers = "$(Resolve-Path backend)/.pw-browsers"
+          if (!(Test-Path $browsers)) { throw "Browser folder missing: $browsers" }
+
+          $zip = "$(Resolve-Path backend)/playwright-browsers.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+
+          Compress-Archive -Path "$browsers\*" -DestinationPath $zip
+          Write-Host "Zipped Playwright browsers to $zip"
+
+      - name: Remove browser folder (keep zip only)
         shell: pwsh
         run: |
-          python -c "import playwright, pathlib, shutil; browsers = pathlib.Path(playwright.__file__).resolve().parent / 'driver' / 'package' / '.local-browsers'; print('Deleting:', browsers); shutil.rmtree(browsers, ignore_errors=True); print('Exists after delete?', browsers.exists())"
-        
+          Remove-Item -Recurse -Force backend/.pw-browsers
 
       - name: Build Python binary
         run: pyinstaller backend/app.spec
@@ -67,8 +71,7 @@ jobs:
 
       - name: Build React frontend
         working-directory: frontend
-        run: |
-          call npm run build --verbose
+        run: call npm run build --verbose
 
       - name: Copy React build to Electron location
         run: |
