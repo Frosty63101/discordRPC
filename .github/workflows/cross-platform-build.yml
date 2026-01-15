@@ -96,19 +96,24 @@ jobs:
             --ignore="^/node_modules" ^
             --ignore="^/frontend/node_modules" ^
             --prune=true
-
+      
+      - name: Zip Windows app
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/DiscordRPC-win32-x64/*" -DestinationPath "dist/DiscordRPC-win32-x64.zip" -Force
+    
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: dist/DiscordRPC-win32-x64/
+          path: dist/DiscordRPC-win32-x64.zip
 
       - name: Upload Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/DiscordRPC-win32-x64/**/*
-
+          files: dist/DiscordRPC-win32-x64.zip
+  
   build-macos-x86_64:
     name: macOS Build (x86_64)
     runs-on: macos-15-intel
@@ -318,18 +323,26 @@ jobs:
             --ignore="^/frontend/node_modules" \
             --prune=true
 
+      - name: Zip macOS arm64 app
+        run: |
+          xattr -cr dist/DiscordRPC-darwin-arm64/DiscordRPC.app || true
+          chmod +x dist/DiscordRPC-darwin-arm64/DiscordRPC.app/Contents/MacOS/DiscordRPC
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/DiscordRPC-darwin-arm64/DiscordRPC.app \
+            dist/DiscordRPC-darwin-arm64.zip
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-build-arm64
-          path: dist/DiscordRPC-darwin-arm64/
-
+          path: dist/DiscordRPC-darwin-arm64.zip
+  
       - name: Upload Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/DiscordRPC-darwin-arm64/**/*
-
+          files: dist/DiscordRPC-darwin-arm64.zip
+  
   build-linux:
     name: Linux Build
     runs-on: ubuntu-latest
@@ -411,15 +424,20 @@ jobs:
             --ignore="^/node_modules" \
             --ignore="^/frontend/node_modules" \
             --prune=true
-
+      - name: Zip Linux app
+        run: |
+          cd dist
+          zip -r DiscordRPC-linux-x64.zip DiscordRPC-linux-x64
+    
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: dist/DiscordRPC-linux-x64/
-
+          path: dist/DiscordRPC-linux-x64.zip
+  
       - name: Upload Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/DiscordRPC-linux-x64/**/*
+          files: dist/DiscordRPC-linux-x64.zip
+  
