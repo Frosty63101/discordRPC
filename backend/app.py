@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import shutil
@@ -6,109 +7,35 @@ import signal
 import sys
 import threading
 import time
+import zipfile
+from logging.handlers import RotatingFileHandler
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 
 presenceThread = None
+
 statusLock = threading.Lock()
 configLock = threading.Lock()
 booksLock = threading.Lock()
+booksCacheLock = threading.Lock()
 
-# Events
 init_event = threading.Event()
 is_running_event = threading.Event()
 should_run_event = threading.Event()
 
-import os
-import sys
-import zipfile
+stopSleepEvent = threading.Event()
 
+booksCache = {"timestamp": 0, "platform": None, "data": None}
 
-def findBundledPlaywrightZip(meipassDir):
-    """
-    Handles:
-      - <_MEIPASS>/playwright-browsers.zip (correct file)
-      - <_MEIPASS>/playwright-browsers.zip/ (wrong folder) containing the zip
-    """
-    directPath = os.path.join(meipassDir, "playwright-browsers.zip")
-
-    if os.path.isfile(directPath):
-        return directPath
-
-    if os.path.isdir(directPath):
-        nestedPath = os.path.join(directPath, "playwright-browsers.zip")
-        if os.path.isfile(nestedPath):
-            return nestedPath
-
-        for rootDir, _, fileNames in os.walk(directPath):
-            for fileName in fileNames:
-                if fileName.lower() == "playwright-browsers.zip":
-                    return os.path.join(rootDir, fileName)
-
-    return None
-
-
-def setPlaywrightBrowserPathForPyinstaller():
-    """
-    PyInstaller-safe Playwright browsers setup.
-
-    - Never reads/extracts directly from sys._MEIPASS (Windows can deny access).
-    - Copies playwright-browsers.zip to a writable cache dir first.
-    - Extracts once, using a marker file.
-    - Sets PLAYWRIGHT_BROWSERS_PATH to the extracted folder (the folder containing chromium-*).
-    """
-    if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
-        return
-
-    meipassDir = sys._MEIPASS
-    bundledZipInMeipass = findBundledPlaywrightZip(meipassDir)
-    if not bundledZipInMeipass:
-        return
-    if not os.path.exists(bundledZipInMeipass):
-        return  # zip not bundled, nothing to do
-
-    # Pick a writable cache directory
-    if sys.platform == "win32":
-        baseCacheDir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    elif sys.platform == "darwin":
-        baseCacheDir = os.path.join(os.path.expanduser("~"), "Library", "Caches")
-    else:
-        baseCacheDir = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-
-    appCacheDir = os.path.join(baseCacheDir, "discordrpc-playwright")
-    extractedBrowsersDir = os.path.join(appCacheDir, "browsers")   # contains chromium-xxxx folders
-    markerPath = os.path.join(appCacheDir, ".extracted-ok")
-    cachedZipPath = os.path.join(appCacheDir, "playwright-browsers.zip")
-
-    os.makedirs(appCacheDir, exist_ok=True)
-
-    if not os.path.exists(markerPath):
-        # Blow away any partial extraction
-        if os.path.exists(extractedBrowsersDir):
-            shutil.rmtree(extractedBrowsersDir, ignore_errors=True)
-        os.makedirs(extractedBrowsersDir, exist_ok=True)
-
-        # Copy zip out of _MEIPASS first (THIS is the key fix)
-        shutil.copy2(bundledZipInMeipass, cachedZipPath)
-
-        # Extract from the copied zip
-        with zipfile.ZipFile(cachedZipPath, "r") as zipRef:
-            zipRef.extractall(extractedBrowsersDir)
-
-        # Write marker to prevent re-extract every run
-        with open(markerPath, "w", encoding="utf-8") as f:
-            f.write(str(int(time.time())))
-
-    # Playwright expects this to point to the directory containing chromium-* folders
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = extractedBrowsersDir
-
-setPlaywrightBrowserPathForPyinstaller()
+statusInfo = {"status": ["Idle"], "message": [None], "lastUpdated": [None]}
 
 DEFAULT_CONFIG = {
     "goodreads_id": "your_goodreads_id_here",
@@ -120,46 +47,173 @@ DEFAULT_CONFIG = {
     "startOnStartup": False,
     "update_interval": 60,
     "startByDefault": False,
-    "platform": "goodreads"
+    "platform": "goodreads",
 }
 
-def log(message):
-    try:
-        logPath = os.path.join(os.path.expanduser("~"), ".config", "gr_rpc_log.txt")
-        os.makedirs(os.path.dirname(logPath), exist_ok=True)
-        with open(logPath, "a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
-    except Exception:
-        pass
+CONFIG = {}
 
-statusInfo = {
-    "status": ["Idle"],
-    "message": [None],
-    "lastUpdated": [None]
-}
 
-def updateStatus(status, message=None):
-    """Thread-safe status updater consumed by /api/status."""
+def getAppDataDir(appName: str) -> str:
+    if sys.platform == "win32":
+        baseDir = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(baseDir, appName)
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", appName)
+    baseDir = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(baseDir, appName)
+
+
+def getCacheDir(appName: str) -> str:
+    if sys.platform == "win32":
+        baseDir = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(baseDir, appName)
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Caches", appName)
+    baseDir = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(baseDir, appName)
+
+
+appDataDir = getAppDataDir("GoodreadsRPC")
+cacheDir = getCacheDir("GoodreadsRPC")
+os.makedirs(appDataDir, exist_ok=True)
+os.makedirs(cacheDir, exist_ok=True)
+
+configPath = os.path.join(appDataDir, "app_config.json")
+logPath = os.path.join(appDataDir, "gr_rpc_log.txt")
+
+
+def setupLogger() -> logging.Logger:
+    logger = logging.getLogger("GoodreadsRPC")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    if logger.handlers:
+        return logger
+
+    handler = RotatingFileHandler(
+        logPath,
+        maxBytes=1_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+
+logger = setupLogger()
+
+
+def updateStatus(status: str, message: str | None = None) -> None:
     ts = time.time()
     with statusLock:
         statusInfo["status"].append(status)
         statusInfo["message"].append(message)
         statusInfo["lastUpdated"].append(ts)
 
-def safeJsonifyError(e, code=500, where="unknown"):
-    msg = f"{type(e).__name__}: {e}"
-    log(f"[{where}] ERROR: {msg}")
-    updateStatus("Error", f"[{where}] {msg}")
+
+def logInfo(message: str, uiStatus: str | None = None) -> None:
+    logger.info(message)
+    if uiStatus:
+        updateStatus(uiStatus, message)
+
+
+def logWarning(message: str, uiStatus: str | None = None) -> None:
+    logger.warning(message)
+    if uiStatus:
+        updateStatus(uiStatus, message)
+
+
+def logError(message: str, uiStatus: str | None = None, exc: Exception | None = None) -> None:
+    if exc is not None:
+        logger.exception(message)
+    else:
+        logger.error(message)
+    if uiStatus:
+        updateStatus(uiStatus, message)
+
+
+def safeJsonifyError(e: Exception, code: int = 500, where: str = "unknown"):
+    msg = f"[{where}] {type(e).__name__}: {e}"
+    logError(msg, uiStatus="Error", exc=e)
     return jsonify({"error": msg}), code
 
-def load_config():
+
+def buildHttpSession() -> requests.Session:
+    retry = Retry(
+        total=3,
+        backoff_factor=0.6,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session = requests.Session()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+httpSession = buildHttpSession()
+
+
+def findBundledPlaywrightZip(meipassDir: str) -> str | None:
+    directPath = os.path.join(meipassDir, "playwright-browsers.zip")
+    if os.path.isfile(directPath):
+        return directPath
+    if os.path.isdir(directPath):
+        nestedPath = os.path.join(directPath, "playwright-browsers.zip")
+        if os.path.isfile(nestedPath):
+            return nestedPath
+        for rootDir, _, fileNames in os.walk(directPath):
+            for fileName in fileNames:
+                if fileName.lower() == "playwright-browsers.zip":
+                    return os.path.join(rootDir, fileName)
+    return None
+
+
+def setPlaywrightBrowserPathForPyinstaller() -> None:
+    if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
+        return
+
+    meipassDir = sys._MEIPASS
+    bundledZipInMeipass = findBundledPlaywrightZip(meipassDir)
+    if not bundledZipInMeipass or not os.path.exists(bundledZipInMeipass):
+        logWarning("Playwright zip not found in bundle; StoryGraph may fail.", uiStatus="Info")
+        return
+
+    playwrightCacheDir = os.path.join(cacheDir, "discordrpc-playwright")
+    extractedBrowsersDir = os.path.join(playwrightCacheDir, "browsers")
+    markerPath = os.path.join(playwrightCacheDir, ".extracted-ok")
+    cachedZipPath = os.path.join(playwrightCacheDir, "playwright-browsers.zip")
+
+    os.makedirs(playwrightCacheDir, exist_ok=True)
+
+    if not os.path.exists(markerPath):
+        if os.path.exists(extractedBrowsersDir):
+            shutil.rmtree(extractedBrowsersDir, ignore_errors=True)
+        os.makedirs(extractedBrowsersDir, exist_ok=True)
+
+        shutil.copy2(bundledZipInMeipass, cachedZipPath)
+        with zipfile.ZipFile(cachedZipPath, "r") as zipRef:
+            zipRef.extractall(extractedBrowsersDir)
+
+        with open(markerPath, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+
+        logInfo("Extracted Playwright browsers to cache.", uiStatus="Info")
+
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = extractedBrowsersDir
+
+
+setPlaywrightBrowserPathForPyinstaller()
+
+
+def load_config() -> dict:
     global CONFIG
     try:
-        path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+        if os.path.exists(configPath):
+            with open(configPath, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
 
             changed = False
@@ -174,59 +228,80 @@ def load_config():
             if changed:
                 save_config_internal()
 
-            log(f"Config loaded from {path}")
+            logInfo("Config loaded.", uiStatus="Info")
         else:
             with configLock:
                 CONFIG = DEFAULT_CONFIG.copy()
             save_config_internal()
-            log(f"Config created at {path}")
+            logInfo("Config created.", uiStatus="Info")
 
         return CONFIG
     except Exception as e:
         with configLock:
             CONFIG = DEFAULT_CONFIG.copy()
-        updateStatus("Error", f"Failed to load config, using defaults: {e}")
-        log(f"Failed to load config, using defaults: {e}")
+        logError(f"Failed to load config; using defaults: {e}", uiStatus="Error", exc=e)
         return CONFIG
 
-def save_config_internal():
-    try:
-        path = os.path.join(os.path.expanduser("~"), ".config", "app_config.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
 
+def save_config_internal() -> None:
+    try:
         with configLock:
             cfg = dict(CONFIG)
 
-        tmpPath = path + ".tmp"
+        tmpPath = configPath + ".tmp"
         with open(tmpPath, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=4)
-        os.replace(tmpPath, path)
+        os.replace(tmpPath, configPath)
     except Exception as e:
-        updateStatus("Error", f"Failed to save config: {e}")
-        log(f"Failed to save config: {e}")
+        logError(f"Failed to save config: {e}", uiStatus="Error", exc=e)
+
 
 CONFIG = load_config()
 
-def normalizeConfigUpdateKeys(updateDict):
-    """
-    Accept multiple frontend naming styles and normalize to the backend's keys.
-    """
-    normalized = dict(updateDict or {})
 
-    # Allow camelCase or other variants from the UI
+def normalizeConfigUpdateKeys(updateDict: dict) -> dict:
+    normalized = dict(updateDict or {})
     if "currentIsbn" in normalized and "current_isbn" not in normalized:
         normalized["current_isbn"] = normalized["currentIsbn"]
     if "currentISBN" in normalized and "current_isbn" not in normalized:
         normalized["current_isbn"] = normalized["currentISBN"]
-
     if "storygraphRememberUserToken" in normalized and "storygraph_remember_user_token" not in normalized:
         normalized["storygraph_remember_user_token"] = normalized["storygraphRememberUserToken"]
-
     return normalized
 
-def applyConfigToRuntimeState():
-    global currentIsbn, currentBook
 
+def clampConfigValues(cfg: dict) -> dict:
+    cleaned = dict(cfg)
+
+    platformValue = (cleaned.get("platform") or "goodreads").lower().strip()
+    if platformValue not in ("goodreads", "storygraph"):
+        platformValue = "goodreads"
+    cleaned["platform"] = platformValue
+
+    try:
+        intervalValue = int(cleaned.get("update_interval", 60))
+    except Exception:
+        intervalValue = 60
+    cleaned["update_interval"] = max(5, min(600, intervalValue))
+
+    for boolKey in ("minimizeToTray", "startOnStartup", "startByDefault"):
+        if boolKey in cleaned:
+            cleaned[boolKey] = bool(cleaned[boolKey])
+
+    for strKey in ("goodreads_id", "discord_app_id", "storygraph_username", "storygraph_remember_user_token", "current_isbn"):
+        if strKey in cleaned and cleaned[strKey] is not None:
+            cleaned[strKey] = str(cleaned[strKey]).strip()
+
+    return cleaned
+
+
+currentBook = None
+currentIsbn = None
+books = {}
+
+
+def applyConfigToRuntimeState() -> None:
+    global currentIsbn, currentBook
     with configLock:
         currentIsbn = CONFIG.get("current_isbn")
 
@@ -236,146 +311,68 @@ def applyConfigToRuntimeState():
         else:
             currentBook = None
 
-# Current selection state (protected by booksLock)
-currentBook = None
-currentIsbn = CONFIG.get("current_isbn")
-books = {}
 
 applyConfigToRuntimeState()
 
 
 @app.errorhandler(Exception)
-def handle_unhandled_error(e):
+def handle_unhandled_error(e: Exception):
     return safeJsonifyError(e, code=500, where="GlobalHandler")
 
-# -------------------------
-# StoryGraph helpers
-# -------------------------
-def extractStorygraphBookId(bookUrl):
-    if not bookUrl:
-        return None
-    match = re.search(r"/books/([0-9a-fA-F-]{36})", bookUrl)
-    return match.group(1) if match else None
 
-def parseStorygraphStartedDate(containerDiv):
-    if not containerDiv:
-        return None
-    allText = containerDiv.get_text(" ", strip=True)
-    match = re.search(r"\bStarted\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\b", allText)
-    return match.group(1) if match else None
-
-def cleanText(textValue):
-    """Collapse whitespace + strip. Safe for None."""
+def cleanText(textValue: str | None) -> str:
     if not textValue:
         return ""
     return " ".join(textValue.split()).strip()
 
-def parseIsbnFromIsbnUid(isbnUidText):
-    """
-    StoryGraph shows: 'ISBN/UID: None' or 'ISBN/UID: 978...'
-    Sometimes it's ISBN10, sometimes ISBN13, sometimes some other UID.
-    We return:
-      - isbn13 if we can find 13-digit ISBN (or 13 with X at end, rare)
-      - isbn10 if we can find 10-char ISBN (digits/X)
-      - rawIsbnUid = cleaned original field (or None)
-    """
-    isbnUidText = cleanText(isbnUidText)
-    if not isbnUidText or isbnUidText.lower() == "none":
-        return None, None, None
 
-    # Remove label if caller passed full line like "ISBN/UID: 123"
-    isbnUidText = re.sub(r"^isbn\s*/\s*uid\s*:\s*", "", isbnUidText, flags=re.IGNORECASE).strip()
+def sanitizeCover(url: str | None) -> str | None:
+    try:
+        if not url:
+            return None
+        return re.sub(r"\._[A-Z0-9]+_(?=\.(?:jpg|jpeg|png))", "", url, flags=re.IGNORECASE)
+    except Exception:
+        return url
 
-    # Pull candidates: allow digits and X/x, ignore hyphens/spaces
-    normalized = re.sub(r"[^0-9Xx]", "", isbnUidText)
 
-    isbn13 = None
-    isbn10 = None
+def safeText(node) -> str | None:
+    return node.get_text(strip=True) if node else None
 
-    # Prefer ISBN-13 if present
-    match13 = re.search(r"\b(\d{13})\b", normalized)
-    if match13:
-        isbn13 = match13.group(1)
 
-    # Then try ISBN-10 (9 digits + digit/X)
-    match10 = re.search(r"\b(\d{9}[0-9Xx])\b", normalized)
-    if match10:
-        isbn10 = match10.group(1).upper()
+def getPlatformConfigSnapshot() -> dict:
+    with configLock:
+        snapshot = {
+            "platform": (CONFIG.get("platform") or "goodreads").lower(),
+            "goodreads_id": (CONFIG.get("goodreads_id") or "").strip(),
+            "storygraph_username": (CONFIG.get("storygraph_username") or "").strip(),
+            "discord_app_id": (CONFIG.get("discord_app_id") or "").strip(),
+            "update_interval": CONFIG.get("update_interval", 60),
+        }
+    return snapshot
 
-    # If it's neither, keep raw as a UID (still useful)
-    rawIsbnUid = isbnUidText if isbnUidText else None
-
-    return isbn13, isbn10, rawIsbnUid
-
-def extractEditionInfoField(editionInfoDiv, fieldName):
-    """
-    In your HTML:
-      <div class="hidden edition-info ...">
-        <p class="text-xs"><span class="font-semibold">ISBN/UID:</span> None</p>
-        <p class="text-xs"><span class="font-semibold">Format:</span> Digital</p>
-        ...
-      </div>
-
-    We find the <p> whose <span> label matches fieldName, then return the trailing text.
-    """
-    if not editionInfoDiv:
-        return ""
-
-    for pTag in editionInfoDiv.find_all("p"):
-        labelSpan = pTag.find("span", class_=re.compile(r"\bfont-semibold\b"))
-        if not labelSpan:
-            continue
-
-        labelText = cleanText(labelSpan.get_text())
-        # labelText will be like "ISBN/UID:" including colon
-        if labelText.lower().startswith(fieldName.lower()):
-            # Get entire p text, subtract the label portion
-            fullText = cleanText(pTag.get_text(" ", strip=True))
-            # Remove the label at the front
-            valueText = re.sub(rf"^{re.escape(labelText)}\s*", "", fullText).strip()
-            return valueText
-
-    return ""
 
 def parseStoryGraphCurrentReadsHtml(htmlText: str) -> list[dict]:
-    """
-    Parse StoryGraph 'currently reading' HTML into a list of book dicts.
-
-    Output keys are designed to be easy to normalize later:
-      - bookId, title, author
-      - bookPath (relative /books/<uuid>)
-      - coverUrl
-      - startedDate (e.g. "Jan 13, 2026")
-      - seriesName, seriesNumber
-    """
     soup = BeautifulSoup(htmlText, "html.parser")
     parsedBooks = []
-
-    # Each current read is typically: <div class="book-pane" data-book-id="...">
     bookPanes = soup.select("div.book-pane[data-book-id]")
 
     for bookPane in bookPanes:
         bookId = (bookPane.get("data-book-id") or "").strip()
 
-        # Title link like: <h3><a href="/books/<uuid>">Title</a></h3>
         titleLink = bookPane.select_one('h3 a[href^="/books/"]')
         title = titleLink.get_text(strip=True) if titleLink else None
         bookPath = titleLink.get("href") if titleLink else None
 
-        # First author link like: <a href="/authors/...">Author</a>
         authorLink = bookPane.select_one('a[href^="/authors/"]')
         author = authorLink.get_text(strip=True) if authorLink else None
 
-        # Series info links like: <a href="/series/...">Series Name</a> <a ...>#2</a>
         seriesLinks = bookPane.select('p a[href^="/series/"]')
         seriesName = seriesLinks[0].get_text(strip=True) if len(seriesLinks) >= 1 else None
         seriesNumber = seriesLinks[1].get_text(strip=True) if len(seriesLinks) >= 2 else None
 
-        # Cover image (often the first img in the pane)
         coverImg = bookPane.select_one("img")
         coverUrl = coverImg.get("src") if coverImg else None
 
-        # Find "Started Jan 13, 2026"
         startedDate = None
         for pTag in bookPane.select("p"):
             textValue = pTag.get_text(" ", strip=True)
@@ -383,60 +380,36 @@ def parseStoryGraphCurrentReadsHtml(htmlText: str) -> list[dict]:
                 startedDate = textValue.split("Started ", 1)[1].strip()
                 break
 
-        parsedBooks.append({
-            "bookId": bookId,
-            "title": title,
-            "author": author,
-            "bookPath": bookPath,          # <-- IMPORTANT
-            "coverUrl": coverUrl,
-            "startedDate": startedDate,    # <-- IMPORTANT
-            "seriesName": seriesName,
-            "seriesNumber": seriesNumber,
-        })
+        parsedBooks.append(
+            {
+                "bookId": bookId,
+                "title": title,
+                "author": author,
+                "bookPath": bookPath,
+                "coverUrl": coverUrl,
+                "startedDate": startedDate,
+                "seriesName": seriesName,
+                "seriesNumber": seriesNumber,
+            }
+        )
 
     return parsedBooks
 
 
-def chooseStableBookKey(storygraphBook):
-    """
-    Pick a stable key to use as our internal 'isbn' field.
-    Priority:
-      1) ISBN-13
-      2) ISBN-10
-      3) StoryGraph UUID (bookId)
-      4) synthetic fallback
-    """
-    isbn13 = (storygraphBook.get("isbn13") or "").strip()
-    if isbn13:
-        return isbn13
-
-    isbn10 = (storygraphBook.get("isbn10") or "").strip()
-    if isbn10:
-        return isbn10
-
+def chooseStableBookKey(storygraphBook: dict) -> str:
     bookId = (storygraphBook.get("bookId") or "").strip()
     if bookId:
         return f"sg-{bookId}"
-
-    # last resort: title+author (not guaranteed unique, but better than crashing)
     title = (storygraphBook.get("title") or "unknown").strip()
     author = (storygraphBook.get("author") or "unknown").strip()
     return f"sg-noid-{title}-{author}".lower()
 
 
-def normalizeStorygraphBooksToDict(storygraphBooksList):
-    """
-    Convert StoryGraph list -> dict matching the Goodreads-like shape your app expects.
-
-    Your app expects each entry to have:
-      isbn, title, author, coverArt, startDate, platform, bookUrl
-    """
+def normalizeStorygraphBooksToDict(storygraphBooksList: list[dict]) -> dict:
     normalized = {}
-
     for book in (storygraphBooksList or []):
         stableKey = chooseStableBookKey(book)
 
-        # StoryGraph gives us bookPath; convert to full URL if needed
         bookPath = (book.get("bookPath") or "").strip()
         if bookPath.startswith("/"):
             fullBookUrl = f"https://app.thestorygraph.com{bookPath}"
@@ -448,236 +421,237 @@ def normalizeStorygraphBooksToDict(storygraphBooksList):
             "title": book.get("title") or "Unknown Title",
             "author": book.get("author") or "Unknown Author",
             "coverArt": sanitizeCover(book.get("coverUrl")),
-            "startDate": book.get("startedDate"),   # <-- FIX: startedDate -> startDate
+            "startDate": book.get("startedDate"),
             "platform": "storygraph",
-            "bookUrl": fullBookUrl,                 # <-- FIX: bookPath -> bookUrl
-
-            # extras (optional but nice for UI/debugging)
+            "bookUrl": fullBookUrl,
             "bookId": book.get("bookId"),
             "series": book.get("seriesName"),
             "seriesNumber": book.get("seriesNumber"),
         }
-
     return normalized
 
-# -------------------------
-# Common scraping helpers
-# -------------------------
-def sanitizeCover(url):
-    try:
-        if not url:
-            return None
-        return re.sub(r'\._[A-Z0-9]+_(?=\.(?:jpg|jpeg|png))', '', url, flags=re.IGNORECASE)
-    except Exception:
-        return url
 
-def safeText(node):
-    return node.get_text(strip=True) if node else None
-
-def getPlatformConfigSnapshot():
-    """
-    Read platform + IDs from CONFIG safely.
-    Returns a dict snapshot so we don't keep grabbing locks everywhere.
-    """
-    with configLock:
-        snapshot = {
-            "platform": (CONFIG.get("platform") or "goodreads").lower(),
-            "goodreads_id": (CONFIG.get("goodreads_id") or "").strip(),
-            "storygraph_username": (CONFIG.get("storygraph_username") or "").strip(),
-            "discord_app_id": (CONFIG.get("discord_app_id") or "").strip(),
-            "update_interval": CONFIG.get("update_interval", 60),
-        }
-    return snapshot
-
-def get_books():
+def get_books() -> dict | None:
     cfg = getPlatformConfigSnapshot()
     platform = cfg["platform"]
 
     if platform == "goodreads":
         goodreadsId = cfg["goodreads_id"]
-        try:
-            if not goodreadsId:
-                updateStatus("Error", "Goodreads ID missing")
-                log("Goodreads ID missing in config.")
-                return None
-
-            url = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
-            headers = {"User-Agent": "Mozilla/5.0"}
-
-            updateStatus("Info", f"Fetching books from {url}")
-            log(f"Fetching books from {url}")
-
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                msg = f"Failed to fetch books: {response.status_code} {response.reason}"
-                updateStatus("Error", msg)
-                log(msg)
-                return None
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            bookTable = soup.find("table", {"id": "books"})
-            if not bookTable:
-                updateStatus("Error", "No book table found")
-                log("No book table found in the response.")
-                return None
-
-            rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
-            if not rows:
-                updateStatus("Error", "No book rows found")
-                log("No book rows found in the table.")
-                return None
-
-            found = {}
-            for row in rows:
-                try:
-                    titleCell = row.find("td", class_="field title")
-                    authorCell = row.find("td", class_="field author")
-                    coverCell = row.find("td", class_="field cover")
-                    dateCell = row.find("td", class_="field date_started")
-                    isbnCell = row.find("td", class_="field isbn")
-
-                    title = safeText(titleCell.find("a") if titleCell else None) or "Unknown Title"
-                    author = safeText(authorCell.find("a") if authorCell else None) or "Unknown Author"
-                    coverArt = sanitizeCover((coverCell.find("img")["src"] if coverCell and coverCell.find("img") else None))
-
-                    startSpan = dateCell.find("span", class_="date_started_value") if dateCell else None
-                    startDate = safeText(startSpan)
-
-                    isbnVal = None
-                    if isbnCell:
-                        valDiv = isbnCell.find("div", class_="value")
-                        txt = safeText(valDiv)
-                        if txt:
-                            isbnVal = txt
-
-                    isbn = isbnVal if isbnVal else f"noisbn-{title}-{author}"
-
-                    found[isbn] = {
-                        "isbn": isbn,
-                        "title": title,
-                        "author": author,
-                        "coverArt": coverArt,
-                        "startDate": startDate,
-                        "platform": "goodreads",
-                        "bookUrl": f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
-                    }
-                    log(f"Found book: {title} by {author} (ISBN: {isbn})")
-                except Exception as rowErr:
-                    log(f"Failed to parse a book row: {rowErr}")
-                    updateStatus("Error", f"Failed to parse a book row: {rowErr}")
-
-            if not found:
-                updateStatus("Error", "Parsed 0 books")
-                log("Parsed 0 books.")
-                return None
-
-            updateStatus("Active", f"Fetched {len(found)} books (Goodreads)")
-            return found
-
-        except Exception as e:
-            updateStatus("Error", f"Error fetching books: {e}")
-            log(f"Error fetching books: {e}")
+        if not goodreadsId:
+            logWarning("Goodreads ID missing.", uiStatus="Error")
             return None
 
-    elif platform == "storygraph":
-        storygraphUsername = cfg["storygraph_username"]
-        try:
-            if not storygraphUsername:
-                updateStatus("Error", "StoryGraph username missing")
-                log("StoryGraph username missing in config.")
-                return None
-    
-            url = f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
-    
-            with configLock:
-                rememberUserToken = (CONFIG.get("storygraph_remember_user_token") or "").strip()
-    
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-            }
-    
-            updateStatus("Info", f"Fetching books from {url}")
-            log(f"Fetching books from {url}")
-    
-            # ALWAYS use Playwright for StoryGraph
-            import time as timeModule
+        url = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
+        headers = {"User-Agent": "Mozilla/5.0"}
 
+        logInfo(f"Fetching Goodreads currently-reading for user {goodreadsId}.", uiStatus="Info")
+
+        try:
+            response = httpSession.get(url, headers=headers, timeout=10)
+        except Exception as e:
+            logError(f"Goodreads request failed: {e}", uiStatus="Error", exc=e)
+            return None
+
+        if response.status_code != 200:
+            logError(f"Goodreads fetch failed: {response.status_code} {response.reason}", uiStatus="Error")
+            return None
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        bookTable = soup.find("table", {"id": "books"})
+        if not bookTable:
+            logError("Goodreads page parsed but no books table found.", uiStatus="Error")
+            return None
+
+        rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
+        if not rows:
+            logWarning("Goodreads books table found but no review rows.", uiStatus="Error")
+            return None
+
+        found = {}
+        for row in rows:
+            try:
+                titleCell = row.find("td", class_="field title")
+                authorCell = row.find("td", class_="field author")
+                coverCell = row.find("td", class_="field cover")
+                dateCell = row.find("td", class_="field date_started")
+                isbnCell = row.find("td", class_="field isbn")
+
+                title = safeText(titleCell.find("a") if titleCell else None) or "Unknown Title"
+                author = safeText(authorCell.find("a") if authorCell else None) or "Unknown Author"
+                coverArt = sanitizeCover(
+                    (coverCell.find("img")["src"] if coverCell and coverCell.find("img") else None)
+                )
+
+                startSpan = dateCell.find("span", class_="date_started_value") if dateCell else None
+                startDate = safeText(startSpan)
+
+                isbnVal = None
+                if isbnCell:
+                    valDiv = isbnCell.find("div", class_="value")
+                    txt = safeText(valDiv)
+                    if txt:
+                        isbnVal = txt
+
+                isbn = isbnVal if isbnVal else f"noisbn-{title}-{author}"
+
+                found[isbn] = {
+                    "isbn": isbn,
+                    "title": title,
+                    "author": author,
+                    "coverArt": coverArt,
+                    "startDate": startDate,
+                    "platform": "goodreads",
+                    "bookUrl": url,
+                }
+            except Exception as rowErr:
+                logWarning(f"Failed to parse a Goodreads row: {rowErr}")
+
+        if not found:
+            logWarning("Goodreads parse succeeded but produced 0 books.", uiStatus="Error")
+            return None
+
+        logInfo(f"Fetched {len(found)} book(s) from Goodreads.", uiStatus="Active")
+        return found
+
+    if platform == "storygraph":
+        storygraphUsername = cfg["storygraph_username"]
+        if not storygraphUsername:
+            logWarning("StoryGraph username missing.", uiStatus="Error")
+            return None
+
+        url = f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
+
+        with configLock:
+            rememberUserToken = (CONFIG.get("storygraph_remember_user_token") or "").strip()
+
+        logInfo(f"Fetching StoryGraph currently-reading for user {storygraphUsername}.", uiStatus="Info")
+
+        try:
             from playwright.sync_api import sync_playwright
-    
-            htmlText = None
-    
+        except Exception as e:
+            logError(f"Playwright import failed: {e}", uiStatus="Error", exc=e)
+            return None
+
+        htmlText = None
+        try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 context = browser.new_context(
                     viewport={"width": 1280, "height": 720},
-                    user_agent=headers["User-Agent"],
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
                 )
-    
-                if rememberUserToken and rememberUserToken.strip() and rememberUserToken.strip() != "PASTE_VALUE_HERE":
-                    context.add_cookies([{
-                        "name": "remember_user_token",
-                        "value": rememberUserToken,
-                        "domain": "app.thestorygraph.com",
-                        "path": "/",
-                        "httpOnly": True,
-                        "secure": True,
-                        "sameSite": "Lax",
-                    }])
-    
+
+                if rememberUserToken and rememberUserToken != "PASTE_VALUE_HERE":
+                    context.add_cookies(
+                        [
+                            {
+                                "name": "remember_user_token",
+                                "value": rememberUserToken,
+                                "domain": "app.thestorygraph.com",
+                                "path": "/",
+                                "httpOnly": True,
+                                "secure": True,
+                                "sameSite": "Lax",
+                            }
+                        ]
+                    )
+
                 page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    
-                # If StoryGraph redirects to login, stop and report clearly
+
                 if "/users/sign_in" in page.url:
-                    updateStatus(
-                        "Error",
-                        "StoryGraph requires login or list is private. Add remember_user_token or make profile public."
+                    logWarning(
+                        "StoryGraph requires login or list is private. Add remember_user_token or make profile public.",
+                        uiStatus="Error",
                     )
-                    log(f"StoryGraph redirected to sign-in: {page.url}")
                     browser.close()
                     return None
-    
-                # Let JS render
+
                 page.wait_for_timeout(1500)
-    
-                # Scroll a bit to trigger lazy loading
                 for _ in range(10):
                     page.mouse.wheel(0, 2000)
-                    timeModule.sleep(0.5)
-    
+                    time.sleep(0.5)
+
                 htmlText = page.content()
                 browser.close()
-    
-            if not htmlText:
-                updateStatus("Error", "Failed to fetch StoryGraph HTML")
-                log("Failed to fetch StoryGraph HTML (empty).")
-                return None
-    
-            storygraphList = parseStoryGraphCurrentReadsHtml(htmlText)
-            if not storygraphList:
-                updateStatus("Error", "Parsed 0 books from StoryGraph")
-                log("Parsed 0 books from StoryGraph.")
-                return None
-
-            normalizedDict = normalizeStorygraphBooksToDict(storygraphList)
-            if not normalizedDict:
-                updateStatus("Error", "Parsed 0 books from StoryGraph (post-normalize)")
-                log("Parsed 0 books from StoryGraph (post-normalize).")
-                return None
-
-            updateStatus("Active", f"Fetched {len(normalizedDict)} books (StoryGraph)")
-            return normalizedDict
-
 
         except Exception as e:
-            updateStatus("Error", f"Error fetching books: {e}")
-            log(f"Error fetching books: {e}")
+            logError(f"StoryGraph Playwright fetch failed: {e}", uiStatus="Error", exc=e)
             return None
 
-    else:
-        updateStatus("Error", f"Unknown platform: {platform}")
-        log(f"Unknown platform: {platform}")
-        return None
+        if not htmlText:
+            logWarning("StoryGraph fetch returned empty HTML.", uiStatus="Error")
+            return None
+
+        storygraphList = parseStoryGraphCurrentReadsHtml(htmlText)
+        if not storygraphList:
+            logWarning("StoryGraph parsed 0 books.", uiStatus="Error")
+            return None
+
+        normalizedDict = normalizeStorygraphBooksToDict(storygraphList)
+        if not normalizedDict:
+            logWarning("StoryGraph normalize produced 0 books.", uiStatus="Error")
+            return None
+
+        logInfo(f"Fetched {len(normalizedDict)} book(s) from StoryGraph.", uiStatus="Active")
+        return normalizedDict
+
+    logError(f"Unknown platform: {platform}", uiStatus="Error")
+    return None
+
+
+def getBooksCached(ttlSeconds: int = 60) -> dict | None:
+    cfg = getPlatformConfigSnapshot()
+    platform = cfg["platform"]
+    now = time.time()
+
+    with booksCacheLock:
+        if (
+            booksCache["data"] is not None
+            and booksCache["platform"] == platform
+            and (now - booksCache["timestamp"]) < ttlSeconds
+        ):
+            return booksCache["data"]
+
+    scraped = get_books()
+    with booksCacheLock:
+        booksCache["timestamp"] = now
+        booksCache["platform"] = platform
+        booksCache["data"] = scraped
+    return scraped
+
+
+@app.route("/api/hello")
+def hello():
+    try:
+        updateStatus("Info", "Hello ping")
+        return jsonify({"message": "Hello from Flask!"})
+    except Exception as e:
+        return safeJsonifyError(e, 500, "hello")
+
+
+@app.route("/api/health", methods=["GET"])
+def health():
+    try:
+        cfg = getPlatformConfigSnapshot()
+        with statusLock:
+            lastStatus = statusInfo["status"][-1] if statusInfo["status"] else None
+            lastMessage = statusInfo["message"][-1] if statusInfo["message"] else None
+            lastUpdated = statusInfo["lastUpdated"][-1] if statusInfo["lastUpdated"] else None
+
+        data = {
+            "ok": True,
+            "platform": cfg["platform"],
+            "presenceRequested": should_run_event.is_set(),
+            "presenceRunning": is_running_event.is_set(),
+            "playwrightBrowsersPath": os.environ.get("PLAYWRIGHT_BROWSERS_PATH"),
+            "lastStatus": lastStatus,
+            "lastMessage": lastMessage,
+            "lastUpdated": lastUpdated,
+        }
+        return jsonify(data), 200
+    except Exception as e:
+        return safeJsonifyError(e, 500, "health")
 
 
 @app.route("/api/scraper/get_books", methods=["GET"])
@@ -686,84 +660,81 @@ def scraper_get_books():
         global currentBook, currentIsbn, books
 
         with booksLock:
-            scraped = get_books()
+            scraped = getBooksCached()
             books = scraped or {}
 
             if not books:
-                updateStatus("Error", "No books found")
-                log("No books found.")
+                updateStatus("Error", "No books found.")
                 return jsonify({"error": "No books found."}), 404
 
-            # Keep current selection if still valid
             if currentIsbn and currentIsbn in books:
                 currentBook = books[currentIsbn]
             else:
                 currentBook = next(iter(books.values()))
                 currentIsbn = currentBook["isbn"]
-                # Persist selection so UI stays consistent across restarts
                 with configLock:
                     CONFIG["current_isbn"] = currentIsbn
                 save_config_internal()
 
             init_event.set()
             updateStatus("Active", f"Books ready (current: {currentIsbn})")
-
-            # Keep response format exactly as your UI expects: [books, currentIsbn]
             return jsonify([books, currentIsbn]), 200
 
     except Exception as e:
         return safeJsonifyError(e, 500, "scraper_get_books")
 
-# -------------------------
-# Basic endpoints
-# -------------------------
-@app.route("/api/hello")
-def hello():
+
+@app.route("/api/scraper/refresh", methods=["POST"])
+def scraper_refresh():
     try:
-        log("Hello endpoint called.")
-        updateStatus("Info", "Hello ping")
-        return jsonify({"message": "Hello from Flask!"})
+        with booksCacheLock:
+            booksCache["timestamp"] = 0
+            booksCache["platform"] = None
+            booksCache["data"] = None
+        updateStatus("Info", "Books cache cleared")
+        logInfo("Books cache cleared.", uiStatus=None)
+        return jsonify({"message": "Cache cleared."}), 200
     except Exception as e:
-        return safeJsonifyError(e, 500, "hello")
+        return safeJsonifyError(e, 500, "scraper_refresh")
+
 
 @app.route("/shutdown", methods=["POST"])
 def shutdown():
     try:
-        log("Shutdown endpoint called.")
         updateStatus("Info", "Shutdown requested")
+        logInfo("Shutdown requested.", uiStatus=None)
         pid = os.getpid()
         threading.Thread(target=lambda: os.kill(pid, signal.SIGTERM), daemon=True).start()
         return jsonify({"message": "Flask shutting down..."})
     except Exception as e:
         return safeJsonifyError(e, 500, "shutdown")
 
+
 @app.route("/api/getStartByDefault", methods=["GET"])
 def get_start_by_default():
     try:
-        val = bool(CONFIG.get("startByDefault", False))
-        updateStatus("Info", f"startByDefault={val}")
+        with configLock:
+            val = bool(CONFIG.get("startByDefault", False))
         return jsonify({"startByDefault": val})
     except Exception as e:
         return safeJsonifyError(e, 500, "get_start_by_default")
 
-# -------------------------
-# Config endpoints
-# -------------------------
+
 @app.route("/api/config", methods=["GET"])
 def get_config():
     try:
         with configLock:
             cfg = dict(CONFIG)
-        updateStatus("Info", "Config served")
         return jsonify(cfg)
     except Exception as e:
         return safeJsonifyError(e, 500, "get_config")
+
 
 @app.route("/api/config", methods=["POST"])
 def update_config():
     try:
         data = request.get_json(silent=True) or {}
-        data = normalizeConfigUpdateKeys(data)
+        data = clampConfigValues(normalizeConfigUpdateKeys(data))
 
         with configLock:
             CONFIG.update(data)
@@ -771,6 +742,7 @@ def update_config():
         applyConfigToRuntimeState()
 
         updateStatus("Active", "Config updated (unsaved)")
+        logInfo("Config updated (unsaved).", uiStatus=None)
         return jsonify({"message": "Config updated successfully.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
     except Exception as e:
         return safeJsonifyError(e, 500, "update_config")
@@ -780,7 +752,7 @@ def update_config():
 def save_config():
     try:
         updatedConfig = request.get_json(silent=True) or {}
-        updatedConfig = normalizeConfigUpdateKeys(updatedConfig)
+        updatedConfig = clampConfigValues(normalizeConfigUpdateKeys(updatedConfig))
 
         with configLock:
             CONFIG.update(updatedConfig)
@@ -789,20 +761,18 @@ def save_config():
         applyConfigToRuntimeState()
 
         updateStatus("Active", "Config saved")
+        logInfo("Config saved.", uiStatus=None)
         return jsonify({"message": "Config saved successfully.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
     except Exception as e:
         return safeJsonifyError(e, 500, "save_config")
 
 
-# -------------------------
-# Book select endpoints
-# -------------------------
 @app.route("/api/book/select", methods=["POST"])
 def select_book():
     try:
         global currentIsbn, currentBook, books
         data = request.get_json(silent=True) or {}
-        isbn = data.get("isbn")
+        isbn = (data.get("isbn") or "").strip()
 
         with booksLock:
             if isbn and isbn in books:
@@ -811,26 +781,25 @@ def select_book():
                 with configLock:
                     CONFIG["current_isbn"] = isbn
                 save_config_internal()
-                updateStatus("Active", f"Book selected: {isbn}")
+                updateStatus("Active", "Book selected")
+                logInfo(f"Book selected: {isbn}", uiStatus=None)
                 return jsonify({"message": "Book selected.", "currentIsbn": currentIsbn, "current_isbn": currentIsbn})
-            else:
-                updateStatus("Error", f"Invalid ISBN selection: {isbn}")
-                return jsonify({"error": "Invalid ISBN."}), 400
+
+        updateStatus("Error", "Invalid ISBN.")
+        return jsonify({"error": "Invalid ISBN."}), 400
 
     except Exception as e:
         return safeJsonifyError(e, 500, "select_book")
 
+
 @app.route("/api/book/current", methods=["GET"])
 def get_current_book():
     try:
-        updateStatus("Info", "Current book requested")
         return jsonify(currentBook)
     except Exception as e:
         return safeJsonifyError(e, 500, "get_current_book")
 
-# -------------------------
-# Status endpoint
-# -------------------------
+
 @app.route("/api/status", methods=["GET"])
 def get_status():
     try:
@@ -838,7 +807,7 @@ def get_status():
             tempStatusInfo = {
                 "status": list(statusInfo["status"]),
                 "message": list(statusInfo["message"]),
-                "lastUpdated": list(statusInfo["lastUpdated"])
+                "lastUpdated": list(statusInfo["lastUpdated"]),
             }
             statusInfo["status"].clear()
             statusInfo["message"].clear()
@@ -850,9 +819,28 @@ def get_status():
     except Exception as e:
         return safeJsonifyError(e, 500, "get_status")
 
-# -------------------------
-# Presence endpoints
-# -------------------------
+
+@app.route("/api/presence/test", methods=["POST"])
+def presence_test():
+    try:
+        from pypresence import Presence
+        cfg = getPlatformConfigSnapshot()
+        discordAppId = cfg["discord_app_id"]
+
+        if not discordAppId:
+            return jsonify({"ok": False, "error": "Discord App ID missing"}), 400
+
+        p = Presence(discordAppId)
+        p.connect()
+        p.close()
+        updateStatus("Info", "Discord RPC test success")
+        logger.info("Discord RPC test success.")
+        return jsonify({"ok": True, "message": "Connected to Discord RPC successfully."}), 200
+
+    except Exception as e:
+        return safeJsonifyError(e, 500, "presence_test")
+
+
 @app.route("/api/presence/start", methods=["POST"])
 def presence_start():
     try:
@@ -861,14 +849,13 @@ def presence_start():
         should_run_event.set()
 
         with booksLock:
-            scraped = get_books()
+            scraped = getBooksCached()
             if not scraped:
-                updateStatus("Error", "No books found to start presence")
+                updateStatus("Error", "No books found.")
                 return jsonify({"error": "No books found."}), 404
 
             books = scraped
 
-            # Ensure we have a current book
             if (not currentIsbn) or (currentIsbn not in books):
                 currentBook = next(iter(books.values()))
                 currentIsbn = currentBook["isbn"]
@@ -883,167 +870,141 @@ def presence_start():
         if presenceThread is None or not presenceThread.is_alive():
             presenceThread = threading.Thread(target=run_presence, daemon=True, name="PresenceThread")
             presenceThread.start()
-            updateStatus("Active", "Presence thread started")
+            updateStatus("Active", "Presence started")
+            logInfo("Presence thread started.", uiStatus=None)
             return jsonify({"message": "Presence thread started."})
-        else:
-            updateStatus("Info", "Presence thread already running")
-            return jsonify({"message": "Presence thread already running."})
+
+        updateStatus("Info", "Presence already running")
+        return jsonify({"message": "Presence thread already running."})
 
     except Exception as e:
         return safeJsonifyError(e, 500, "presence_start")
+
 
 @app.route("/api/presence/stop", methods=["POST"])
 def presence_stop():
     try:
         should_run_event.clear()
-        updateStatus("Active", "Presence loop stop requested")
+        stopSleepEvent.set()
+        stopSleepEvent.clear()
+        updateStatus("Active", "Presence stop requested")
+        logInfo("Presence stop requested.", uiStatus=None)
         return jsonify({"message": "Presence loop stopped."})
     except Exception as e:
         return safeJsonifyError(e, 500, "presence_stop")
 
-def run_presence():
-    global currentBook, is_running_event, should_run_event, init_event
 
-    log("Presence thread started.")
+def run_presence():
+    global currentBook
+
+    logInfo("Presence thread running.", uiStatus="Info")
+
     try:
         from pypresence import Presence
     except Exception as e:
-        updateStatus("Error", f"pypresence import failed: {e}")
-        log(f"pypresence not available: {e}")
+        logError(f"pypresence import failed: {e}", uiStatus="Error", exc=e)
         return
 
     try:
         init_event.wait(timeout=10)
         if not init_event.is_set():
-            updateStatus("Error", "Presence init timed out")
-            log("Presence init_event wait timed out.")
+            logWarning("Presence init timed out.", uiStatus="Error")
             return
 
         cfg = getPlatformConfigSnapshot()
         discordAppId = cfg["discord_app_id"]
         if not discordAppId:
-            updateStatus("Error", "Discord App ID missing")
-            log("Discord App ID missing from config.")
+            logWarning("Discord App ID missing.", uiStatus="Error")
             return
 
         presence = Presence(discordAppId)
         try:
             presence.connect()
         except Exception as e:
-            updateStatus("Error", f"Discord connect failed: {e}")
-            log(f"Failed to connect to Discord: {e}")
+            logError(f"Discord connect failed: {e}", uiStatus="Error", exc=e)
             return
 
         is_running_event.set()
         updateStatus("Active", "Discord presence connected")
-        log("Discord presence connected.")
+        logger.info("Discord presence connected.")
 
         try:
             while should_run_event.is_set():
-                try:
-                    # re-read config each loop so switching platform works without restarting the backend
-                    cfg = getPlatformConfigSnapshot()
-                    platform = cfg["platform"]
-                    goodreadsId = cfg["goodreads_id"]
-                    storygraphUsername = cfg["storygraph_username"]
+                cfg = getPlatformConfigSnapshot()
+                platform = cfg["platform"]
+                goodreadsId = cfg["goodreads_id"]
+                storygraphUsername = cfg["storygraph_username"]
 
+                with booksLock:
                     book = currentBook
 
-                    if book:
-                        startTs = None
-                        try:
-                            if book.get("startDate"):
-                                # Both platforms use "Jan 13, 2026" style in your parsing
-                                startTs = int(time.mktime(time.strptime(book["startDate"], "%b %d, %Y")))
-                        except Exception:
-                            startTs = None
-
-                        largeImage = book.get("coverArt") or "https://i.gr-assets.com/images/S/compressed.photo.goodreads.com/nophoto/book/111x148._SX50_.png"
-
-                        if platform == "storygraph":
-                            largeText = "Reading via StoryGraph"
-                            buttonUrl = book.get("bookUrl") or f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
-                            buttonLabel = "View on StoryGraph"
-                        else:
-                            largeText = "Reading via Goodreads"
-                            buttonUrl = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
-                            buttonLabel = "View Goodreads"
-
-                        log(f"Updating presence: title={book.get('title')} author={book.get('author')} startTs={startTs} platform={platform}")
-                        try:
-                            presence.update(
-                                details=book.get("title") or "Unknown Title",
-                                state=f"by {book.get('author') or 'Unknown Author'}",
-                                large_image=largeImage,
-                                large_text=largeText,
-                                start=startTs,
-                                buttons=[{
-                                    "label": buttonLabel,
-                                    "url": buttonUrl
-                                }]
-                            )
-                        except Exception as updateErr:
-                            log(f"Failed to update presence: {updateErr}")
-                            updateStatus("Error", f"Failed to update presence: {updateErr}")
-
-                        updateStatus("Active", f"Presence updated for '{book.get('title')}'")
-                    else:
-                        updateStatus("Info", "No current book to update")
-
-                    interval = 60
+                if book:
+                    startTs = None
                     try:
-                        interval = int(cfg.get("update_interval", 60)) or 60
+                        if book.get("startDate"):
+                            startTs = int(time.mktime(time.strptime(book["startDate"], "%b %d, %Y")))
                     except Exception:
-                        interval = 60
+                        startTs = None
 
-                    time.sleep(max(5, min(600, interval)))
+                    largeImage = "book"
+                    largeText = "Reading"
+                    buttonUrl = None
+                    buttonLabel = None
 
-                except Exception as loopErr:
-                    error = str(loopErr)
-                    updateStatus("Error", f"Presence loop error: {error}")
-                    log(f"Error updating presence: {error}")
+                    if platform == "storygraph":
+                        largeText = "Reading via StoryGraph"
+                        buttonUrl = book.get("bookUrl") or f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
+                        buttonLabel = "View on StoryGraph"
+                    else:
+                        largeText = "Reading via Goodreads"
+                        buttonUrl = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
+                        buttonLabel = "View Goodreads"
 
                     try:
-                        presence.clear()
-                        presence.close()
-                    except Exception as clearErr:
-                        log(f"Failed to clear presence: {clearErr}")
+                        presence.update(
+                            details=book.get("title") or "Unknown Title",
+                            state=f"by {book.get('author') or 'Unknown Author'}",
+                            large_image=largeImage,
+                            large_text=largeText,
+                            start=startTs,
+                            buttons=[{"label": buttonLabel, "url": buttonUrl}] if buttonUrl and buttonLabel else None,
+                        )
+                        updateStatus("Active", f"Presence updated: {book.get('title') or 'Unknown Title'}")
+                    except Exception as updateErr:
+                        logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
+                else:
+                    updateStatus("Info", "No current book selected")
 
-                    # attempt reconnect
-                    try:
-                        cfg = getPlatformConfigSnapshot()
-                        discordAppId = cfg["discord_app_id"]
-                        presence = Presence(discordAppId)
-                        presence.connect()
-                        updateStatus("Active", "Presence reconnected")
-                    except Exception as reconnectErr:
-                        updateStatus("Error", f"Reconnect failed: {reconnectErr}")
-                        log(f"Reconnect failed: {reconnectErr}")
-                        time.sleep(10)
-                        continue
+                try:
+                    interval = int(cfg.get("update_interval", 60)) or 60
+                except Exception:
+                    interval = 60
+
+                waitSeconds = max(5, min(600, interval))
+                stopSleepEvent.wait(timeout=waitSeconds)
 
         finally:
-            log("Presence loop exiting.")
             is_running_event.clear()
             try:
                 presence.clear()
                 presence.close()
-                updateStatus("Info", "Presence cleared on exit")
-            except Exception as e:
-                log(f"Failed to clear presence on exit: {e}")
-                updateStatus("Error", f"Failed to clear presence on exit: {e}")
+            except Exception:
+                pass
+            updateStatus("Info", "Presence cleared")
+            logger.info("Presence cleared.")
 
     except Exception as e:
-        log(f"Presence thread fatal: {e}")
-        updateStatus("Error", f"Presence fatal: {e}")
+        logError(f"Presence fatal: {e}", uiStatus="Error", exc=e)
         is_running_event.clear()
+
 
 def run():
     try:
+        logInfo("Flask server starting.", uiStatus="Info")
         app.run(host="localhost", port=5000)
     except Exception as e:
-        log(f"Flask runtime error: {e}")
-        updateStatus("Error", f"Flask runtime error: {e}")
+        logError(f"Flask runtime error: {e}", uiStatus="Error", exc=e)
+
 
 if __name__ == "__main__":
     run()
