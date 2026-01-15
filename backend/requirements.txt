@@ -4,5 +4,5 @@ pypresence
 pyinstaller
 requests
 beautifulsoup4
-flask-cors
 playwright
+urllib3
