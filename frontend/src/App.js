@@ -8,7 +8,6 @@ function App() {
   const [books, setBooks] = useState({});
   const [selectedISBN, setSelectedISBN] = useState('');
   const [status, setStatus] = useState({ level: 'Idle', text: '', ts: null });
-  const [statusLog, setStatusLog] = useState([]);
   const [message, setMessage] = useState('');
 
   const intervalRef = useRef(null);
@@ -69,15 +68,6 @@ function App() {
           };
           if (prev.level === next.level && prev.text === next.text) return prev;
           return next;
-        });
-
-        setStatusLog((prev) => {
-          const merged = [...prev, ...events].filter((ev, idx, arr) => {
-            if (idx === 0) return true;
-            const p = arr[idx - 1];
-            return !(p.level === ev.level && p.text === ev.text && p.ts === ev.ts);
-          });
-          return merged.slice(-30);
         });
       })
       .catch(() => {});
