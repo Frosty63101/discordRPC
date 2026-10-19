@@ -151,7 +151,7 @@ function setStartOnStartup(enabled) {
             'Comment=Show reading activity on Discord',
             'Exec="' + executable + '"',
             'Terminal=false', 'X-GNOME-Autostart-enabled=true', ''
-        ].join('\\n');
+        ].join('\n');
         fs.writeFileSync(autostartPath, desktopEntry, {mode: 0o600});
         return;
     }
