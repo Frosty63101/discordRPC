@@ -1,11 +1,11 @@
-// electron/preload.js
+// The renderer only gets explicit desktop capabilities, not unrestricted IPC.
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
-    ipcRenderer: {
-        send: (channel, ...args) => ipcRenderer.send(channel, ...args),
-        on: (channel, listener) => ipcRenderer.on(channel, listener),
-        once: (channel, listener) => ipcRenderer.once(channel, listener),
-        removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
-    }
+    setPreferences: (preferences) => ipcRenderer.invoke('app:set-preferences', {
+        minimizeToTray: Boolean(preferences.minimizeToTray),
+        minimizeOnMinimize: Boolean(preferences.minimizeOnMinimize),
+        startOnStartup: Boolean(preferences.startOnStartup),
+    }),
+    quit: () => ipcRenderer.send('force-quit'),
 });
