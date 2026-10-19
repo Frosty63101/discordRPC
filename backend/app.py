@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "storygraph_remember_user_token": "PASTE_VALUE_HERE",
     "current_isbn": None,
     "minimizeToTray": True,
+    "minimizeOnMinimize": False,
     "theme": "system",
     "startOnStartup": False,
     "update_interval": 60,
@@ -331,7 +332,7 @@ def clampConfigValues(cfg: dict) -> dict:
         intervalValue = 60
     cleaned["update_interval"] = max(5, min(600, intervalValue))
 
-    for boolKey in ("minimizeToTray", "startOnStartup", "startByDefault"):
+    for boolKey in ("minimizeToTray", "minimizeOnMinimize", "startOnStartup", "startByDefault"):
         if boolKey in cleaned:
             cleaned[boolKey] = bool(cleaned[boolKey])
 
