@@ -27,6 +27,10 @@ class FakeSession:
         self.urls.append(url)
         return FakeResponse(self.responses[url.split("/api/")[-1]])
 
+    def post(self, url, headers=None, timeout=None):
+        self.urls.append(url)
+        return FakeResponse(self.responses[url.split("/api/")[-1]])
+
 
 class BookSourceTests(unittest.TestCase):
     def testGoodreadsChangedClasses(self):
@@ -60,6 +64,27 @@ class BookSourceTests(unittest.TestCase):
         books, active = fetchAudiobookshelfBooks(session, "https://books.example.org", "apiKey", "usr_2")
         self.assertEqual(active, "abs-li_123")
         self.assertEqual(books[active]["title"], "My Audiobook")
+
+    def testAudiobookshelfNonAdminApiKey(self):
+        item = {"libraryItemId": "li_self", "userId": "usr_2",
+                "displayTitle": "Self Library"}
+        session = FakeSession({
+            "users/online": {"openSessions": []},
+            "authorize": {"user": {"id": "usr_2"}},
+            "me/listening-sessions": {"sessions": [item]},
+        })
+        books, active = fetchAudiobookshelfBooks(session, "https://books.example.org", "apiKey", "usr_2")
+        self.assertIn("abs-li_self", books)
+        self.assertIsNone(active)
+        self.assertIn("https://books.example.org/api/authorize", session.urls)
+
+    def testAudiobookshelfNonAdminWrongUser(self):
+        session = FakeSession({
+            "users/online": {"openSessions": []},
+            "authorize": {"user": {"id": "usr_different"}},
+        })
+        with self.assertRaisesRegex(ValueError, "user UUID"):
+            fetchAudiobookshelfBooks(session, "https://books.example.org", "apiKey", "usr_2")
 
     def testAudiobookshelfHistoryNotLive(self):
         item = {"libraryItemId": "li_old", "userId": "usr_2",
