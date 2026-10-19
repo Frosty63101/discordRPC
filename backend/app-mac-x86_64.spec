@@ -26,9 +26,9 @@ pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dl
 
 a = Analysis(
     ["app.py"],
-    pathex=["backend"],
+    pathex=[str(specDir)],
     binaries=[(dll, ".") for dll in pythonDlls],
-    datas = [(str(playwrightDriverPackageDir), "playwright/driver/package"), ("playwright-browsers.zip", "playwright-browsers.zip"),],
+    datas=playwrightDatas,
     hiddenimports=["pypresence"] + collect_submodules("playwright"),
     hookspath=[],
     runtime_hooks=[],
