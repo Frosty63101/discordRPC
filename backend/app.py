@@ -464,6 +464,22 @@ def get_books() -> dict | None:
 
         found = parseGoodreadsBooks(response.text, url)
         if not found:
+            # Goodreads sometimes serves a JS-rendered redesign. Revisit through
+            # Playwright only when static HTML extraction yields no book links.
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    try:
+                        page = browser.new_page()
+                        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        page.locator('a[href*="/book/show/"]').first.wait_for(timeout=8000)
+                        found = parseGoodreadsBooks(page.content(), page.url)
+                    finally:
+                        browser.close()
+            except Exception as error:
+                logWarning(f"Goodreads dynamic fallback unavailable: {type(error).__name__}")
+        if not found:
             logWarning("Goodreads returned no identifiable books; site layout or privacy settings may have changed.", uiStatus="Error")
             return None
         return found
