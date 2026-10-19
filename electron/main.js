@@ -19,35 +19,42 @@ const BACKEND_KILL_GRACE_MS = 800;
 const APP_FORCE_EXIT_MS = 4000;
 
 // ---------- App identity & icon defaults ----------
-app.setName('Goodreads Discord RPC');
+app.setName('Reading Presence');
 if (process.platform === 'win32') {
     // Helps Windows taskbar pinning + correct icon usage for the .exe
     app.setAppUserModelId('com.frosty63.goodreads-rpc');
 }
 
-// Common icon resolution logic
-function resolveFaviconCandidates() {
-    // Try packaged resources first (Electron-packaged app)
-    const resourceRoot = process.resourcesPath || path.resolve(__dirname, '..');
-    const packagedIco = path.join(resourceRoot, 'favicon.ico');
-    const packagedPng = path.join(resourceRoot, 'favicon.png');
-
-    // Try dev tree (repo layout)
-    const devIco = path.resolve(__dirname, '..', 'frontend', 'public', 'favicon.ico');
-    const devPng = path.resolve(__dirname, '..', 'frontend', 'public', 'favicon.png');
-
-    const candidates = [];
-    [packagedIco, devIco, packagedPng, devPng].forEach(p => { if (fs.existsSync(p)) candidates.push(p); });
-    return candidates;
-}
-
+// The icon is drawn as SVG in the repository and as native PNG/ICO/ICNS
+// by scripts/generate_icons.py during packaging. No downloaded artwork.
 function loadFaviconNativeImage() {
-    const candidates = resolveFaviconCandidates(); // prefer .ico first
-    for (const p of candidates) {
-        const ni = nativeImage.createFromPath(p);
-        if (!ni.isEmpty()) return ni;
+    const root = path.resolve(__dirname, '..', 'frontend', 'public');
+    for (const name of ['book-icon.png', 'book-icon.svg', 'favicon.ico']) {
+        const filePath = path.join(root, name);
+        if (!fs.existsSync(filePath)) continue;
+        const image = name.endsWith('.svg')
+            ? nativeImage.createFromDataURL(
+                'data:image/svg+xml;base64,' + fs.readFileSync(filePath).toString('base64')
+            )
+            : nativeImage.createFromPath(filePath);
+        if (!image.isEmpty()) return image;
     }
     return null;
+}
+
+function createTrayNativeImage() {
+    if (process.platform === 'darwin') {
+        // Monochrome template artwork follows the macOS menu-bar theme.
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
+            '<path fill="black" d="M11 18C8 16 5 16 2 17V5C6 4 9 5 11 7C13 5 16 4 20 5V17C17 16 14 16 11 18Z"/>' +
+            '<path stroke="white" stroke-width="1.2" d="M11 7V18"/></svg>';
+        const image = nativeImage.createFromDataURL('data:image/svg+xml;base64,' +
+            Buffer.from(svg).toString('base64')).resize({width: 22, height: 22});
+        image.setTemplateImage(true);
+        return image;
+    }
+    const image = loadFaviconNativeImage();
+    return image && !image.isEmpty() ? image.resize({width: 24, height: 24}) : nativeImage.createEmpty();
 }
 
 // ---------- single instance guard ----------
@@ -114,77 +121,66 @@ function loadLocalConfig() {
     }
     return {};
 }
-const localConfig = loadLocalConfig();
+const localConfig = {
+    minimizeToTray: true,
+    minimizeOnMinimize: false,
+    startOnStartup: false,
+    ...loadLocalConfig(),
+};
 
-// ---------- tray image synthesizer fallback ----------
-function makeSvg({ template = false }) {
-    if (template) {
-        return `
-            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-                <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="black"/>
-                <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="black"/>
-                <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="black"/>
-                <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="black"/>
-                <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="black"/>
-            </svg>
-        `;
-    }
-
-    return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-            <defs>
-                <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stop-color="#2563eb"/>
-                    <stop offset="100%" stop-color="#1d4ed8"/>
-                </linearGradient>
-            </defs>
-            <rect x="1" y="1" width="20" height="20" rx="5" ry="5" fill="url(#bg)"/>
-            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
-            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17 Z" fill="#F9FAFB"/>
-            <rect x="10.6" y="7.2" width="0.8" height="9.8" fill="#D1D5DB"/>
-            <path d="M5.4 6.4 Q7.8 3.8 10.3 5.2 L10.3 6.2 Q7.9 5.6 5.4 6.4 Z" fill="#E5E7EB"/>
-            <path d="M16.6 6.4 Q14.2 3.8 11.7 5.2 L11.7 6.2 Q14.1 5.6 16.6 6.4 Z" fill="#E5E7EB"/>
-            <path d="M3 17 L3 8 Q7 5.2 11 7.2 L11 17" fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9"/>
-            <path d="M19 17 L19 8 Q15 5.2 11 7.2 L11 17" fill="none" stroke="rgba(17,24,39,0.45)" stroke-width="0.9"/>
-        </svg>
-    `;
+function getAutostartFilePath() {
+    const configRoot = process.env.XDG_CONFIG_HOME || path.join(app.getPath('home'), '.config');
+    return path.join(configRoot, 'autostart', 'reading-presence.desktop');
 }
 
-function createTrayNativeImage() {
-    // Prefer favicon.ico / favicon.png
-    const fav = loadFaviconNativeImage();
-    if (fav && !fav.isEmpty()) {
-        if (process.platform === 'darwin') fav.setTemplateImage(false); // .ico isn't a template; use as-is
-        return fav;
+function setStartOnStartup(enabled) {
+    if (!app.isPackaged && enabled) {
+        throw new Error('Launch-at-login is available in packaged desktop builds');
     }
-
-    // Fallback: your previous data-URL SVG generator
-    const svg = makeSvg({ template: process.platform === 'darwin' });
-    const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-    const baseImg = nativeImage.createFromDataURL(dataUrl);
-    if (baseImg.isEmpty()) {
-        return nativeImage.createFromDataURL(
-            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABhH6NsgAAAABJRU5ErkJggg=='
-        );
-    }
-
-    const out = nativeImage.createEmpty();
-    if (process.platform === 'win32') {
-        const reps = [{ sf: 1, px: 16 }, { sf: 1.25, px: 20 }, { sf: 1.5, px: 24 }, { sf: 2, px: 32 }];
-        for (const { sf, px } of reps) {
-            const rep = baseImg.resize({ width: px, height: px });
-            out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
+    if (process.platform === 'linux') {
+        const autostartPath = getAutostartFilePath();
+        if (!enabled) {
+            if (fs.existsSync(autostartPath)) fs.unlinkSync(autostartPath);
+            return;
         }
-        return out;
+        fs.mkdirSync(path.dirname(autostartPath), {recursive: true});
+        const executable = process.execPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const desktopEntry = [
+            '[Desktop Entry]', 'Type=Application', 'Version=1.0',
+            'Name=Reading Presence',
+            'Comment=Show reading activity on Discord',
+            'Exec="' + executable + '"',
+            'Terminal=false', 'X-GNOME-Autostart-enabled=true', ''
+        ].join('\\n');
+        fs.writeFileSync(autostartPath, desktopEntry, {mode: 0o600});
+        return;
     }
-    const reps = [{ sf: 1, px: 22 }, { sf: 2, px: 44 }, { sf: 3, px: 66 }];
-    for (const { sf, px } of reps) {
-        const rep = baseImg.resize({ width: px, height: px });
-        out.addRepresentation({ scaleFactor: sf, size: { width: px, height: px }, buffer: rep.toPNG() });
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+        app.setLoginItemSettings({openAtLogin: enabled, openAsHidden: true});
+        return;
     }
-    if (process.platform === 'darwin') out.setTemplateImage(false);
-    return out;
+    throw new Error('Launch-at-login is not available on this platform');
 }
+
+function applyWindowPreferences(preferences) {
+    const next = {
+        minimizeToTray: Boolean(preferences.minimizeToTray),
+        minimizeOnMinimize: Boolean(preferences.minimizeOnMinimize),
+        startOnStartup: Boolean(preferences.startOnStartup),
+    };
+    // Register startup before updating the running preferences; a failure
+    // leaves the checkbox unchanged in the renderer.
+    setStartOnStartup(next.startOnStartup);
+    Object.assign(localConfig, next);
+    return next;
+}
+
+ipcMain.handle('app:set-preferences', (event, preferences) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents) {
+        throw new Error('Unrecognized settings window');
+    }
+    return applyWindowPreferences(preferences || {});
+});
 
 // ---------- preload bridge for renderer IPC ----------
 function getPreloadPath() {
@@ -197,6 +193,9 @@ function getPreloadPath() {
 // ---------- app lifecycle ----------
 app.whenReady().then(async () => {
     try {
+        if (localConfig.startOnStartup) {
+            try { setStartOnStartup(true); } catch (error) { console.error('Autostart setup failed:', error); }
+        }
         createSplash();
         await launchBackendWithRetries();
         await waitForFlask();
@@ -302,7 +301,7 @@ function createMainWindow() {
         const iconImage = loadFaviconNativeImage() || undefined;
 
         mainWindow = new BrowserWindow({
-            width: 900, height: 680, show: false,
+            width: 1120, height: 800, minWidth: 760, minHeight: 610, show: false,
             icon: iconImage, // <-- UI window/taskbar icon defaults to favicon.ico
             webPreferences: {
                 nodeIntegration: false,
@@ -319,11 +318,23 @@ function createMainWindow() {
             mainWindow.show();
         });
 
+        mainWindow.on('minimize', (event) => {
+            if (!isQuitting && localConfig.minimizeOnMinimize) {
+                if (!tray) setupTray();
+                if (tray) {
+                    event.preventDefault();
+                    mainWindow.hide();
+                    if (process.platform === 'darwin') app.dock?.hide();
+                }
+            }
+        });
+
         mainWindow.on('close', (e) => {
             if (isQuitting) return; // actual quit path
             if (localConfig.minimizeToTray) {
-                e.preventDefault();
                 if (!tray) setupTray();
+                if (!tray) return;
+                e.preventDefault();
                 mainWindow.hide();
                 if (process.platform === 'darwin') { try { app.dock?.hide(); } catch {} }
             } else {
@@ -343,6 +354,7 @@ function setupTray() {
     try {
         if (tray) return;
         const trayImage = createTrayNativeImage();
+        if (trayImage.isEmpty()) throw new Error('Tray icon could not be generated');
         tray = new Tray(trayImage);
         const menu = Menu.buildFromTemplate([
             { label: 'Show App', click: () => {
@@ -353,12 +365,18 @@ function setupTray() {
             { type: 'separator' },
             { label: 'Quit', click: () => hardExit() }
         ]);
-        tray.setToolTip('Goodreads Discord RPC');
+        tray.setToolTip('Reading Presence');
         tray.setContextMenu(menu);
-        tray.on('double-click', () => {
+        const restoreWindow = () => {
             if (process.platform === 'darwin') { try { app.dock?.show(); } catch {} }
-            if (mainWindow) mainWindow.show();
-        });
+            if (mainWindow) {
+                if (mainWindow.isMinimized()) mainWindow.restore();
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        };
+        tray.on('double-click', restoreWindow);
+        if (process.platform !== 'darwin') tray.on('click', restoreWindow);
     } catch (e) { console.error('Failed to setup tray:', e); }
 }
 
@@ -455,8 +473,7 @@ function destroyUi() {
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 app.on('window-all-closed', () => {
-    if (isQuitting) return;
-    if (process.platform !== 'darwin' && !localConfig.minimizeToTray) hardExit();
+    if (!isQuitting && !localConfig.minimizeToTray) hardExit();
 });
 app.on('before-quit', () => { isQuitting = true; });
 app.on('activate', () => {
