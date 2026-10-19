@@ -181,6 +181,10 @@ function App() {
   const handleRefresh = useCallback(async () => {
     setBusy(true);
     try {
+      if (JSON.stringify(config) !== JSON.stringify(savedConfig)) {
+        const saved = await saveSettings(config);
+        if (!saved) return;
+      }
       await apiRequest('/api/scraper/refresh', { method: 'POST' });
       const data = await fetchBooks();
       showNotice('success', 'Found ' + Object.keys(data[0] || {}).length + ' book(s).');
@@ -190,7 +194,7 @@ function App() {
       setBusy(false);
       fetchLogs();
     }
-  }, [fetchBooks, fetchLogs, showNotice]);
+  }, [config, savedConfig, saveSettings, fetchBooks, fetchLogs, showNotice]);
 
   const handleBookChange = useCallback(async (value) => {
     if (!value) return;
