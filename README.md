@@ -1,12 +1,14 @@
 
 # discordRPC
 
-A Discord Rich Presence application that displays your current reading activity from Goodreads and StoryGraph.
+A Discord Rich Presence application that displays your current reading activity from Goodreads, StoryGraph, and Audiobookshelf.
 
 ## Features
 
 - Display current book from Goodreads
 - Display current book from StoryGraph
+- Display currently playing audiobooks from Audiobookshelf using a server URL, API key, and user UUID
+- Fallback Goodreads/StoryGraph extraction using stable book links and structured metadata instead of only CSS classes
 - Real-time Discord Rich Presence updates
 - Automatic synchronization
 
@@ -316,6 +318,25 @@ A Discord Rich Presence application that displays your current reading activity 
 3. Go to Application → Cookies
 4. Find the `remember` cookie and copy its value
 5. Paste it into the application settings
+
+### Audiobookshelf
+
+Choose **Audiobookshelf** from Platform, then enter:
+1. **Server URL:** `https://books.example.com` or `http://localhost:13378` (reachable from this computer).
+2. **API Key:** the Audiobookshelf user token, which is sent to the server as a Bearer token.
+3. **User UUID:** the user ID returned by Audiobookshelf's `/api/users` endpoint or displayed in its user configuration.
+
+Save the config before starting presence. The app uses `/api/users/online` for currently active playback and `/api/users/{userId}/listening-sessions` for recent choices. Reading activity clears from Discord when no active session is detected. Depending on server permissions, listing online sessions may require an administrative API token. The server may report a recently stopped session for a short time. User IDs may have `usr_` prefixes depending on the server; copy them exactly.
+
+**Security:** the key is stored in your local application configuration; do not commit the key to this repository or share diagnostic logs containing credentials. Use HTTPS when accessing a remote server. The UI hides the saved key after you save it.
+
+### Notes on website scraping
+
+Goodreads and StoryGraph do not offer a supported modern public API for this specific use case. The app tries book links, semantic selectors and JSON-LD structured data so a cosmetic CSS change is less likely to break parsing. StoryGraph uses a headless browser for JavaScript-rendered pages and may require a login cookie. Anti-bot controls, private profiles or major website changes can still prevent automated access; no scraper can be guaranteed permanently UI-change-proof.
+
+### Supported desktop targets
+
+The repository includes packaging for Windows x64, macOS Intel/Apple Silicon, and Linux x64. GitHub Actions builds these operating systems; actual Discord desktop availability, GUI libraries and server permissions must still be validated on target machines.
 
 ## Requirements
 
