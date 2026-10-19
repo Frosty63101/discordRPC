@@ -251,6 +251,23 @@ def fetchAudiobookshelfBooks(httpSession, serverUrl, apiKey, userId, freshnessSe
     byId = {}
     activeKey = None
 
+    # For user-scoped tokens without access to /api/users/online, probe a
+    # recently updated session. /api/session/<id> is limited to open sessions
+    # and accessible to the owner; history alone never proves activity.
+    if not onlineSessions:
+        for candidate in sorted(sessions, key=lambda item: timestampSeconds(item.get("updatedAt")), reverse=True)[:3]:
+            sessionId = candidate.get("id")
+            lastUpdated = timestampSeconds(candidate.get("updatedAt"))
+            if not sessionId or not lastUpdated or not 0 <= now - lastUpdated <= freshnessSeconds:
+                continue
+            try:
+                openSession = apiGet(f"/api/session/{sessionId}")
+                if openSession and str(openSession.get("id")) == str(sessionId):
+                    onlineSessions.append(openSession)
+                    break
+            except Exception:
+                continue
+
     # Most recent first, while open sessions win selection.
     ordered = sorted(sessions, key=lambda item: timestampSeconds(item.get("updatedAt")), reverse=True)
     ordered = sorted(ordered + onlineSessions, key=lambda item: item in onlineSessions, reverse=True)
