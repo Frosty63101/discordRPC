@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import zipfile
+from collections import deque
 from book_sources import parseGoodreadsBooks, parseStoryGraphBooks, fetchAudiobookshelfBooks
 from cover_art import BookCoverResolver, DEFAULT_COVER_ASSET
 from logging.handlers import RotatingFileHandler
@@ -48,6 +49,7 @@ DEFAULT_CONFIG = {
     "storygraph_remember_user_token": "PASTE_VALUE_HERE",
     "current_isbn": None,
     "minimizeToTray": True,
+    "theme": "system",
     "startOnStartup": False,
     "update_interval": 60,
     "startByDefault": False,
@@ -319,6 +321,9 @@ def clampConfigValues(cfg: dict) -> dict:
     if platformValue not in ("goodreads", "storygraph", "audiobookshelf"):
         platformValue = "goodreads"
     cleaned["platform"] = platformValue
+
+    themeValue = str(cleaned.get("theme") or "system").lower().strip()
+    cleaned["theme"] = themeValue if themeValue in ("light", "dark", "system") else "system"
 
     try:
         intervalValue = int(cleaned.get("update_interval", 60))
@@ -647,6 +652,21 @@ def getBooksCached(ttlSeconds: int = 60) -> dict | None:
         booksCache["platform"] = platform
         booksCache["data"] = scraped
     return scraped
+
+
+@app.route("/api/logs", methods=["GET"])
+def getRecentLogs():
+    """Latest 50 log-file lines, including messages emitted before the UI opened."""
+    try:
+        requested = request.args.get("limit", default=50, type=int) or 50
+        limit = max(1, min(200, requested))
+        if not os.path.exists(logPath):
+            return jsonify({"lines": [], "limit": limit}), 200
+        with open(logPath, "r", encoding="utf-8", errors="replace") as logFile:
+            lines = list(deque(logFile, maxlen=limit))
+        return jsonify({"lines": [line.rstrip("\\r\\n") for line in lines], "limit": limit}), 200
+    except Exception as error:
+        return safeJsonifyError(error, 500, "getRecentLogs")
 
 
 @app.route("/api/hello")
