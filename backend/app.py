@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import zipfile
+from book_sources import parseGoodreadsBooks, parseStoryGraphBooks, fetchAudiobookshelfBooks
 from logging.handlers import RotatingFileHandler
 
 import requests
@@ -48,6 +49,9 @@ DEFAULT_CONFIG = {
     "update_interval": 60,
     "startByDefault": False,
     "platform": "goodreads",
+    "audiobookshelf_url": "",
+    "audiobookshelf_api_key": "",
+    "audiobookshelf_user_id": "",
 }
 
 CONFIG = {}
@@ -274,7 +278,7 @@ def clampConfigValues(cfg: dict) -> dict:
     cleaned = dict(cfg)
 
     platformValue = (cleaned.get("platform") or "goodreads").lower().strip()
-    if platformValue not in ("goodreads", "storygraph"):
+    if platformValue not in ("goodreads", "storygraph", "audiobookshelf"):
         platformValue = "goodreads"
     cleaned["platform"] = platformValue
 
@@ -288,7 +292,7 @@ def clampConfigValues(cfg: dict) -> dict:
         if boolKey in cleaned:
             cleaned[boolKey] = bool(cleaned[boolKey])
 
-    for strKey in ("goodreads_id", "discord_app_id", "storygraph_username", "storygraph_remember_user_token", "current_isbn"):
+    for strKey in ("goodreads_id", "discord_app_id", "storygraph_username", "storygraph_remember_user_token", "current_isbn", "audiobookshelf_url", "audiobookshelf_api_key", "audiobookshelf_user_id"):
         if strKey in cleaned and cleaned[strKey] is not None:
             cleaned[strKey] = str(cleaned[strKey]).strip()
 
@@ -346,6 +350,8 @@ def getPlatformConfigSnapshot() -> dict:
             "goodreads_id": (CONFIG.get("goodreads_id") or "").strip(),
             "storygraph_username": (CONFIG.get("storygraph_username") or "").strip(),
             "discord_app_id": (CONFIG.get("discord_app_id") or "").strip(),
+            "audiobookshelf_url": (CONFIG.get("audiobookshelf_url") or "").strip(),
+            "audiobookshelf_user_id": (CONFIG.get("audiobookshelf_user_id") or "").strip(),
             "update_interval": CONFIG.get("update_interval", 60),
         }
     return snapshot
@@ -456,61 +462,10 @@ def get_books() -> dict | None:
             logError(f"Goodreads fetch failed: {response.status_code} {response.reason}", uiStatus="Error")
             return None
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        bookTable = soup.find("table", {"id": "books"})
-        if not bookTable:
-            logError("Goodreads page parsed but no books table found.", uiStatus="Error")
-            return None
-
-        rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
-        if not rows:
-            logWarning("Goodreads books table found but no review rows.", uiStatus="Error")
-            return None
-
-        found = {}
-        for row in rows:
-            try:
-                titleCell = row.find("td", class_="field title")
-                authorCell = row.find("td", class_="field author")
-                coverCell = row.find("td", class_="field cover")
-                dateCell = row.find("td", class_="field date_started")
-                isbnCell = row.find("td", class_="field isbn")
-
-                title = safeText(titleCell.find("a") if titleCell else None) or "Unknown Title"
-                author = safeText(authorCell.find("a") if authorCell else None) or "Unknown Author"
-                coverArt = sanitizeCover(
-                    (coverCell.find("img")["src"] if coverCell and coverCell.find("img") else None)
-                )
-
-                startSpan = dateCell.find("span", class_="date_started_value") if dateCell else None
-                startDate = safeText(startSpan)
-
-                isbnVal = None
-                if isbnCell:
-                    valDiv = isbnCell.find("div", class_="value")
-                    txt = safeText(valDiv)
-                    if txt:
-                        isbnVal = txt
-
-                isbn = isbnVal if isbnVal else f"noisbn-{title}-{author}"
-
-                found[isbn] = {
-                    "isbn": isbn,
-                    "title": title,
-                    "author": author,
-                    "coverArt": coverArt,
-                    "startDate": startDate,
-                    "platform": "goodreads",
-                    "bookUrl": url,
-                }
-            except Exception as rowErr:
-                logWarning(f"Failed to parse a Goodreads row: {rowErr}")
-
+        found = parseGoodreadsBooks(response.text, url)
         if not found:
-            logWarning("Goodreads parse succeeded but produced 0 books.", uiStatus="Error")
+            logWarning("Goodreads returned no identifiable books; site layout or privacy settings may have changed.", uiStatus="Error")
             return None
-
-        logInfo(f"Fetched {len(found)} book(s) from Goodreads.", uiStatus="Active")
         return found
 
     if platform == "storygraph":
@@ -583,18 +538,27 @@ def get_books() -> dict | None:
             logWarning("StoryGraph fetch returned empty HTML.", uiStatus="Error")
             return None
 
-        storygraphList = parseStoryGraphCurrentReadsHtml(htmlText)
-        if not storygraphList:
-            logWarning("StoryGraph parsed 0 books.", uiStatus="Error")
-            return None
-
-        normalizedDict = normalizeStorygraphBooksToDict(storygraphList)
+        normalizedDict = parseStoryGraphBooks(htmlText, url)
         if not normalizedDict:
             logWarning("StoryGraph normalize produced 0 books.", uiStatus="Error")
             return None
 
         logInfo(f"Fetched {len(normalizedDict)} book(s) from StoryGraph.", uiStatus="Active")
         return normalizedDict
+
+    if platform == "audiobookshelf":
+        with configLock:
+            apiKey = (CONFIG.get("audiobookshelf_api_key") or "").strip()
+        try:
+            found, activeKey = fetchAudiobookshelfBooks(
+                httpSession, cfg["audiobookshelf_url"], apiKey, cfg["audiobookshelf_user_id"]
+            )
+            with booksCacheLock:
+                booksCache["activeKey"] = activeKey
+            return found
+        except Exception as error:
+            logError(f"Audiobookshelf fetch failed: {type(error).__name__}", uiStatus="Error")
+            return None
 
     logError(f"Unknown platform: {platform}", uiStatus="Error")
     return None
@@ -603,6 +567,8 @@ def get_books() -> dict | None:
 def getBooksCached(ttlSeconds: int = 60) -> dict | None:
     cfg = getPlatformConfigSnapshot()
     platform = cfg["platform"]
+    if platform == "audiobookshelf":
+        ttlSeconds = min(ttlSeconds, 10)
     now = time.time()
 
     with booksCacheLock:
@@ -659,8 +625,8 @@ def scraper_get_books():
     try:
         global currentBook, currentIsbn, books
 
+        scraped = getBooksCached()
         with booksLock:
-            scraped = getBooksCached()
             books = scraped or {}
 
             if not books:
@@ -725,6 +691,7 @@ def get_config():
     try:
         with configLock:
             cfg = dict(CONFIG)
+        cfg["audiobookshelf_api_key"] = ""
         return jsonify(cfg)
     except Exception as e:
         return safeJsonifyError(e, 500, "get_config")
@@ -736,8 +703,13 @@ def update_config():
         data = request.get_json(silent=True) or {}
         data = clampConfigValues(normalizeConfigUpdateKeys(data))
 
+        if not data.get("audiobookshelf_api_key"):
+            data.pop("audiobookshelf_api_key", None)
         with configLock:
             CONFIG.update(data)
+        with booksCacheLock:
+            booksCache["timestamp"] = 0
+            booksCache["data"] = None
 
         applyConfigToRuntimeState()
 
@@ -754,8 +726,13 @@ def save_config():
         updatedConfig = request.get_json(silent=True) or {}
         updatedConfig = clampConfigValues(normalizeConfigUpdateKeys(updatedConfig))
 
+        if not updatedConfig.get("audiobookshelf_api_key"):
+            updatedConfig.pop("audiobookshelf_api_key", None)
         with configLock:
             CONFIG.update(updatedConfig)
+        with booksCacheLock:
+            booksCache["timestamp"] = 0
+            booksCache["data"] = None
 
         save_config_internal()
         applyConfigToRuntimeState()
@@ -848,13 +825,18 @@ def presence_start():
 
         should_run_event.set()
 
+        scraped = getBooksCached()
         with booksLock:
-            scraped = getBooksCached()
             if not scraped:
                 updateStatus("Error", "No books found.")
                 return jsonify({"error": "No books found."}), 404
 
             books = scraped
+            if getPlatformConfigSnapshot()["platform"] == "audiobookshelf":
+                with booksCacheLock:
+                    activeKey = booksCache.get("activeKey")
+                if activeKey in books:
+                    currentIsbn = activeKey
 
             if (not currentIsbn) or (currentIsbn not in books):
                 currentBook = next(iter(books.values()))
@@ -935,8 +917,18 @@ def run_presence():
                 goodreadsId = cfg["goodreads_id"]
                 storygraphUsername = cfg["storygraph_username"]
 
-                with booksLock:
-                    book = currentBook
+                if platform == "audiobookshelf":
+                    freshBooks = getBooksCached(ttlSeconds=10)
+                    with booksCacheLock:
+                        activeKey = booksCache.get("activeKey")
+                    with booksLock:
+                        if freshBooks is not None:
+                            books = freshBooks
+                        book = (freshBooks or {}).get(activeKey) if activeKey else None
+                        currentBook = book
+                else:
+                    with booksLock:
+                        book = currentBook
 
                 if book:
                     startTs = None
@@ -951,7 +943,11 @@ def run_presence():
                     buttonUrl = None
                     buttonLabel = None
 
-                    if platform == "storygraph":
+                    if platform == "audiobookshelf":
+                        largeText = "Listening on Audiobookshelf"
+                        buttonUrl = book.get("bookUrl")
+                        buttonLabel = "View Audiobook"
+                    elif platform == "storygraph":
                         largeText = "Reading via StoryGraph"
                         buttonUrl = book.get("bookUrl") or f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
                         buttonLabel = "View on StoryGraph"
@@ -973,7 +969,12 @@ def run_presence():
                     except Exception as updateErr:
                         logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
                 else:
-                    updateStatus("Info", "No current book selected")
+                    if platform == "audiobookshelf":
+                        try:
+                            presence.clear()
+                        except Exception:
+                            pass
+                    updateStatus("Info", "No active book")
 
                 try:
                     interval = int(cfg.get("update_interval", 60)) or 60
@@ -1001,7 +1002,7 @@ def run_presence():
 def run():
     try:
         logInfo("Flask server starting.", uiStatus="Info")
-        app.run(host="localhost", port=5000)
+        app.run(host="127.0.0.1", port=5000, use_reloader=False)
     except Exception as e:
         logError(f"Flask runtime error: {e}", uiStatus="Error", exc=e)
 
