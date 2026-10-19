@@ -204,7 +204,18 @@ def fetchAudiobookshelfBooks(httpSession, serverUrl, apiKey, userId, freshnessSe
     def apiGet(path, params=None):
         response = httpSession.get(f"{serverUrl}{path}", headers=headers, params=params, timeout=12)
         response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as error:
+            raise ValueError(f"Audiobookshelf returned non-JSON content for {path}; check the server URL") from error
+
+    def apiPost(path):
+        response = httpSession.post(f"{serverUrl}{path}", headers=headers, timeout=12)
+        response.raise_for_status()
+        try:
+            return response.json()
+        except ValueError as error:
+            raise ValueError(f"Audiobookshelf returned non-JSON content for {path}; check the server URL") from error
 
     sessions = []
     onlineSessions = []
@@ -221,11 +232,20 @@ def fetchAudiobookshelfBooks(httpSession, serverUrl, apiKey, userId, freshnessSe
     try:
         response = apiGet(f"/api/users/{userId}/listening-sessions", {"itemsPerPage": 10})
         sessions = response.get("sessions", [])
-    except Exception:
-        authorizedUser = apiGet("/api/authorize").get("user") or {}
+    except Exception as historyError:
+        # Non-admin keys can access their own sessions via /api/me. The
+        # authorize endpoint is POST, not GET, and tells us which user owns
+        # the key before we fall back to this self-scoped route.
+        try:
+            authorizedUser = apiPost("/api/authorize").get("user") or {}
+        except Exception as authError:
+            raise ValueError(
+                "Cannot access listening sessions. Check the server URL, API key and its permissions"
+            ) from authError
         if str(authorizedUser.get("id")) != str(userId):
-            raise ValueError("This API key cannot access the requested Audiobookshelf user UUID")
-        raise ValueError("Audiobookshelf key cannot read listening sessions for this user")
+            raise ValueError("API key owner differs from the configured Audiobookshelf user UUID") from historyError
+        response = apiGet("/api/me/listening-sessions", {"itemsPerPage": 10})
+        sessions = response.get("sessions", [])
 
     now = time.time()
     byId = {}
