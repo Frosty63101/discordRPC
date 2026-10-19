@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="An open book">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#26375e"/>
+      <stop offset="100%" stop-color="#11203b"/>
+    </linearGradient>
+    <linearGradient id="paperLeft" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#d8e5f5"/>
+    </linearGradient>
+    <linearGradient id="paperRight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#eff5fc"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#tile)"/>
+  <path d="M128 202 C94 178 66 177 37 187 L37 71 C70 60 102 68 128 89 C153 68 184 60 219 71 L219 187 C187 177 158 179 128 202Z" fill="#62d4cf" opacity=".58"/>
+  <path d="M128 185 C103 166 73 161 43 169 L43 64 C78 54 109 65 128 83Z" fill="url(#paperLeft)"/>
+  <path d="M128 185 C154 166 185 161 213 169 L213 64 C180 54 148 65 128 83Z" fill="url(#paperRight)"/>
+  <path d="M128 83 L128 185" stroke="#8196b7" stroke-width="5" stroke-linecap="round"/>
+  <path d="M56 87 C80 83 102 88 114 96 M56 108 C80 105 101 110 113 118 M56 129 C80 126 100 132 113 140" stroke="#adc0d8" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M142 96 C159 87 181 83 201 87 M142 118 C158 110 180 105 201 108 M142 140 C157 132 180 126 201 129" stroke="#adc0d8" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M169 61 L169 112 L180 104 L191 112 L191 63" fill="#27c2b7"/>
+</svg>
