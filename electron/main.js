@@ -427,6 +427,10 @@ function gracefulShutdown() {
             }, BACKEND_TERM_GRACE_MS);
         });
 
+        req.on('timeout', () => {
+            req.destroy(new Error('Backend shutdown timed out'));
+        });
+
         req.on('error', () => {
             escalateKillChain().finally(done);
         });
