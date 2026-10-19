@@ -39,7 +39,7 @@ pythonDlls = glob.glob(os.path.join(os.path.dirname(sys.executable), "python*.dl
 
 a = Analysis(
     ["app.py"],
-    pathex=["backend"],
+    pathex=[str(specDir)],
     binaries=[(dll, ".") for dll in pythonDlls],
     datas=playwrightDatas,
     hiddenimports=collect_submodules("playwright") + ["pypresence"],
@@ -71,7 +71,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    distpath="resources/app/build",
+    distpath="dist",
     workpath="backend/build",
     name="app",
 )

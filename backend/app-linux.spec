@@ -25,7 +25,7 @@ else:
 
 a = Analysis(
     ["app.py"],
-    pathex=["backend"],
+    pathex=[str(specDir)],
     binaries=[],
     datas=playwrightDatas,
     hiddenimports=[

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import os
 import re
@@ -8,17 +9,27 @@ import sys
 import threading
 import time
 import zipfile
+from collections import deque
+from book_sources import parseGoodreadsBooks, parseStoryGraphBooks, fetchAudiobookshelfBooks
+from cover_art import BookCoverResolver, DEFAULT_COVER_ASSET
 from logging.handlers import RotatingFileHandler
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
+# Electron loads a file:// origin ('null'); allow that and local React development
+# only. Broad "*" would let arbitrary websites read the local log/config API.
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ["null", "http://localhost:3000", "http://127.0.0.1:3000"]}},
+    supports_credentials=False,
+)
 
 presenceThread = None
 
@@ -44,10 +55,15 @@ DEFAULT_CONFIG = {
     "storygraph_remember_user_token": "PASTE_VALUE_HERE",
     "current_isbn": None,
     "minimizeToTray": True,
+    "minimizeOnMinimize": False,
+    "theme": "system",
     "startOnStartup": False,
     "update_interval": 60,
     "startByDefault": False,
     "platform": "goodreads",
+    "audiobookshelf_url": "",
+    "audiobookshelf_api_key": "",
+    "audiobookshelf_user_id": "",
 }
 
 CONFIG = {}
@@ -155,6 +171,7 @@ def buildHttpSession() -> requests.Session:
 
 
 httpSession = buildHttpSession()
+coverResolver = BookCoverResolver()
 
 
 def findBundledPlaywrightZip(meipassDir: str) -> str | None:
@@ -172,6 +189,56 @@ def findBundledPlaywrightZip(meipassDir: str) -> str | None:
     return None
 
 
+def ensurePlaywrightBrowserCache(archivePath: str, cacheRoot: str) -> str:
+    """Unpack only when the archive changes or Chromium is missing.
+
+    The archive digest replaces the old permanent '.extracted-ok' timestamp,
+    which could incorrectly reuse a browser built for another Playwright version.
+    """
+    browserDir = os.path.join(cacheRoot, "browsers")
+    markerPath = os.path.join(cacheRoot, ".extracted-ok")
+    os.makedirs(cacheRoot, exist_ok=True)
+
+    digest = hashlib.sha256()
+    with open(archivePath, "rb") as archiveFile:
+        for chunk in iter(lambda: archiveFile.read(1024 * 1024), b""):
+            digest.update(chunk)
+    archiveHash = digest.hexdigest()
+
+    def browserPresent() -> bool:
+        if not os.path.isdir(browserDir):
+            return False
+        for rootDir, _, fileNames in os.walk(browserDir):
+            if "chrome-headless-shell.exe" in fileNames or "chrome-headless-shell" in fileNames:
+                return True
+        return False
+
+    previousHash = ""
+    if os.path.isfile(markerPath):
+        with open(markerPath, "r", encoding="utf-8") as markerFile:
+            previousHash = markerFile.read().strip()
+    if previousHash == archiveHash and browserPresent():
+        return browserDir
+
+    if os.path.isdir(browserDir):
+        shutil.rmtree(browserDir)
+    os.makedirs(browserDir, exist_ok=True)
+    with zipfile.ZipFile(archivePath, "r") as zipRef:
+        realRoot = os.path.realpath(browserDir)
+        for member in zipRef.infolist():
+            realMember = os.path.realpath(os.path.join(browserDir, member.filename))
+            if realMember != realRoot and not realMember.startswith(realRoot + os.sep):
+                raise ValueError("Unsafe path in bundled Chromium archive")
+        zipRef.extractall(browserDir)
+
+    if not browserPresent():
+        raise RuntimeError("Bundled Playwright archive has no Chromium headless-shell executable")
+
+    with open(markerPath, "w", encoding="utf-8") as markerFile:
+        markerFile.write(archiveHash)
+    return browserDir
+
+
 def setPlaywrightBrowserPathForPyinstaller() -> None:
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
@@ -183,27 +250,11 @@ def setPlaywrightBrowserPathForPyinstaller() -> None:
         return
 
     playwrightCacheDir = os.path.join(cacheDir, "discordrpc-playwright")
-    extractedBrowsersDir = os.path.join(playwrightCacheDir, "browsers")
-    markerPath = os.path.join(playwrightCacheDir, ".extracted-ok")
-    cachedZipPath = os.path.join(playwrightCacheDir, "playwright-browsers.zip")
-
-    os.makedirs(playwrightCacheDir, exist_ok=True)
-
-    if not os.path.exists(markerPath):
-        if os.path.exists(extractedBrowsersDir):
-            shutil.rmtree(extractedBrowsersDir, ignore_errors=True)
-        os.makedirs(extractedBrowsersDir, exist_ok=True)
-
-        shutil.copy2(bundledZipInMeipass, cachedZipPath)
-        with zipfile.ZipFile(cachedZipPath, "r") as zipRef:
-            zipRef.extractall(extractedBrowsersDir)
-
-        with open(markerPath, "w", encoding="utf-8") as f:
-            f.write(str(int(time.time())))
-
-        logInfo("Extracted Playwright browsers to cache.", uiStatus="Info")
-
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = extractedBrowsersDir
+    try:
+        browserDir = ensurePlaywrightBrowserCache(bundledZipInMeipass, playwrightCacheDir)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browserDir
+    except Exception as error:
+        logError(f"Bundled Chromium cache repair failed: {type(error).__name__}: {error}", uiStatus="Error")
 
 
 setPlaywrightBrowserPathForPyinstaller()
@@ -274,9 +325,12 @@ def clampConfigValues(cfg: dict) -> dict:
     cleaned = dict(cfg)
 
     platformValue = (cleaned.get("platform") or "goodreads").lower().strip()
-    if platformValue not in ("goodreads", "storygraph"):
+    if platformValue not in ("goodreads", "storygraph", "audiobookshelf"):
         platformValue = "goodreads"
     cleaned["platform"] = platformValue
+
+    themeValue = str(cleaned.get("theme") or "system").lower().strip()
+    cleaned["theme"] = themeValue if themeValue in ("light", "dark", "system") else "system"
 
     try:
         intervalValue = int(cleaned.get("update_interval", 60))
@@ -284,11 +338,11 @@ def clampConfigValues(cfg: dict) -> dict:
         intervalValue = 60
     cleaned["update_interval"] = max(5, min(600, intervalValue))
 
-    for boolKey in ("minimizeToTray", "startOnStartup", "startByDefault"):
+    for boolKey in ("minimizeToTray", "minimizeOnMinimize", "startOnStartup", "startByDefault"):
         if boolKey in cleaned:
             cleaned[boolKey] = bool(cleaned[boolKey])
 
-    for strKey in ("goodreads_id", "discord_app_id", "storygraph_username", "storygraph_remember_user_token", "current_isbn"):
+    for strKey in ("goodreads_id", "discord_app_id", "storygraph_username", "storygraph_remember_user_token", "current_isbn", "audiobookshelf_url", "audiobookshelf_api_key", "audiobookshelf_user_id"):
         if strKey in cleaned and cleaned[strKey] is not None:
             cleaned[strKey] = str(cleaned[strKey]).strip()
 
@@ -317,6 +371,8 @@ applyConfigToRuntimeState()
 
 @app.errorhandler(Exception)
 def handle_unhandled_error(e: Exception):
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
     return safeJsonifyError(e, code=500, where="GlobalHandler")
 
 
@@ -346,6 +402,8 @@ def getPlatformConfigSnapshot() -> dict:
             "goodreads_id": (CONFIG.get("goodreads_id") or "").strip(),
             "storygraph_username": (CONFIG.get("storygraph_username") or "").strip(),
             "discord_app_id": (CONFIG.get("discord_app_id") or "").strip(),
+            "audiobookshelf_url": (CONFIG.get("audiobookshelf_url") or "").strip(),
+            "audiobookshelf_user_id": (CONFIG.get("audiobookshelf_user_id") or "").strip(),
             "update_interval": CONFIG.get("update_interval", 60),
         }
     return snapshot
@@ -456,61 +514,26 @@ def get_books() -> dict | None:
             logError(f"Goodreads fetch failed: {response.status_code} {response.reason}", uiStatus="Error")
             return None
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        bookTable = soup.find("table", {"id": "books"})
-        if not bookTable:
-            logError("Goodreads page parsed but no books table found.", uiStatus="Error")
-            return None
-
-        rows = bookTable.find_all("tr", {"id": lambda x: x and x.startswith("review_")})
-        if not rows:
-            logWarning("Goodreads books table found but no review rows.", uiStatus="Error")
-            return None
-
-        found = {}
-        for row in rows:
-            try:
-                titleCell = row.find("td", class_="field title")
-                authorCell = row.find("td", class_="field author")
-                coverCell = row.find("td", class_="field cover")
-                dateCell = row.find("td", class_="field date_started")
-                isbnCell = row.find("td", class_="field isbn")
-
-                title = safeText(titleCell.find("a") if titleCell else None) or "Unknown Title"
-                author = safeText(authorCell.find("a") if authorCell else None) or "Unknown Author"
-                coverArt = sanitizeCover(
-                    (coverCell.find("img")["src"] if coverCell and coverCell.find("img") else None)
-                )
-
-                startSpan = dateCell.find("span", class_="date_started_value") if dateCell else None
-                startDate = safeText(startSpan)
-
-                isbnVal = None
-                if isbnCell:
-                    valDiv = isbnCell.find("div", class_="value")
-                    txt = safeText(valDiv)
-                    if txt:
-                        isbnVal = txt
-
-                isbn = isbnVal if isbnVal else f"noisbn-{title}-{author}"
-
-                found[isbn] = {
-                    "isbn": isbn,
-                    "title": title,
-                    "author": author,
-                    "coverArt": coverArt,
-                    "startDate": startDate,
-                    "platform": "goodreads",
-                    "bookUrl": url,
-                }
-            except Exception as rowErr:
-                logWarning(f"Failed to parse a Goodreads row: {rowErr}")
-
+        found = parseGoodreadsBooks(response.text, url)
         if not found:
-            logWarning("Goodreads parse succeeded but produced 0 books.", uiStatus="Error")
+            # Goodreads sometimes serves a JS-rendered redesign. Revisit through
+            # Playwright only when static HTML extraction yields no book links.
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    try:
+                        page = browser.new_page()
+                        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        page.locator('a[href*="/book/show/"]').first.wait_for(timeout=8000)
+                        found = parseGoodreadsBooks(page.content(), page.url)
+                    finally:
+                        browser.close()
+            except Exception as error:
+                logWarning(f"Goodreads dynamic fallback unavailable: {type(error).__name__}")
+        if not found:
+            logWarning("Goodreads returned no identifiable books; site layout or privacy settings may have changed.", uiStatus="Error")
             return None
-
-        logInfo(f"Fetched {len(found)} book(s) from Goodreads.", uiStatus="Active")
         return found
 
     if platform == "storygraph":
@@ -583,18 +606,33 @@ def get_books() -> dict | None:
             logWarning("StoryGraph fetch returned empty HTML.", uiStatus="Error")
             return None
 
-        storygraphList = parseStoryGraphCurrentReadsHtml(htmlText)
-        if not storygraphList:
-            logWarning("StoryGraph parsed 0 books.", uiStatus="Error")
-            return None
-
-        normalizedDict = normalizeStorygraphBooksToDict(storygraphList)
+        normalizedDict = parseStoryGraphBooks(htmlText, url)
         if not normalizedDict:
             logWarning("StoryGraph normalize produced 0 books.", uiStatus="Error")
             return None
 
         logInfo(f"Fetched {len(normalizedDict)} book(s) from StoryGraph.", uiStatus="Active")
         return normalizedDict
+
+    if platform == "audiobookshelf":
+        with configLock:
+            apiKey = (CONFIG.get("audiobookshelf_api_key") or "").strip()
+        try:
+            found, activeKey = fetchAudiobookshelfBooks(
+                httpSession, cfg["audiobookshelf_url"], apiKey, cfg["audiobookshelf_user_id"]
+            )
+            with booksCacheLock:
+                booksCache["activeKey"] = activeKey
+            return found
+        except Exception as error:
+            if isinstance(error, ValueError):
+                logError(f"Audiobookshelf setup error: {error}", uiStatus="Error")
+            elif isinstance(error, requests.HTTPError):
+                status = error.response.status_code if error.response is not None else "unknown"
+                logError(f"Audiobookshelf API returned HTTP {status}. Check server permissions and user ID.", uiStatus="Error")
+            else:
+                logError(f"Audiobookshelf connection failed: {type(error).__name__}", uiStatus="Error")
+            return None
 
     logError(f"Unknown platform: {platform}", uiStatus="Error")
     return None
@@ -603,6 +641,8 @@ def get_books() -> dict | None:
 def getBooksCached(ttlSeconds: int = 60) -> dict | None:
     cfg = getPlatformConfigSnapshot()
     platform = cfg["platform"]
+    if platform == "audiobookshelf":
+        ttlSeconds = min(ttlSeconds, 10)
     now = time.time()
 
     with booksCacheLock:
@@ -619,6 +659,21 @@ def getBooksCached(ttlSeconds: int = 60) -> dict | None:
         booksCache["platform"] = platform
         booksCache["data"] = scraped
     return scraped
+
+
+@app.route("/api/logs", methods=["GET"])
+def getRecentLogs():
+    """Latest 50 log-file lines, including messages emitted before the UI opened."""
+    try:
+        requested = request.args.get("limit", default=50, type=int) or 50
+        limit = max(1, min(200, requested))
+        if not os.path.exists(logPath):
+            return jsonify({"lines": [], "limit": limit}), 200
+        with open(logPath, "r", encoding="utf-8", errors="replace") as logFile:
+            lines = list(deque(logFile, maxlen=limit))
+        return jsonify({"lines": [line.rstrip() for line in lines], "limit": limit}), 200
+    except Exception as error:
+        return safeJsonifyError(error, 500, "getRecentLogs")
 
 
 @app.route("/api/hello")
@@ -659,8 +714,8 @@ def scraper_get_books():
     try:
         global currentBook, currentIsbn, books
 
+        scraped = getBooksCached()
         with booksLock:
-            scraped = getBooksCached()
             books = scraped or {}
 
             if not books:
@@ -725,6 +780,7 @@ def get_config():
     try:
         with configLock:
             cfg = dict(CONFIG)
+        cfg["audiobookshelf_api_key"] = ""
         return jsonify(cfg)
     except Exception as e:
         return safeJsonifyError(e, 500, "get_config")
@@ -736,8 +792,13 @@ def update_config():
         data = request.get_json(silent=True) or {}
         data = clampConfigValues(normalizeConfigUpdateKeys(data))
 
+        if not data.get("audiobookshelf_api_key"):
+            data.pop("audiobookshelf_api_key", None)
         with configLock:
             CONFIG.update(data)
+        with booksCacheLock:
+            booksCache["timestamp"] = 0
+            booksCache["data"] = None
 
         applyConfigToRuntimeState()
 
@@ -754,8 +815,13 @@ def save_config():
         updatedConfig = request.get_json(silent=True) or {}
         updatedConfig = clampConfigValues(normalizeConfigUpdateKeys(updatedConfig))
 
+        if not updatedConfig.get("audiobookshelf_api_key"):
+            updatedConfig.pop("audiobookshelf_api_key", None)
         with configLock:
             CONFIG.update(updatedConfig)
+        with booksCacheLock:
+            booksCache["timestamp"] = 0
+            booksCache["data"] = None
 
         save_config_internal()
         applyConfigToRuntimeState()
@@ -847,14 +913,20 @@ def presence_start():
         global presenceThread, currentBook, books, currentIsbn
 
         should_run_event.set()
+        stopSleepEvent.clear()
 
+        scraped = getBooksCached()
         with booksLock:
-            scraped = getBooksCached()
             if not scraped:
                 updateStatus("Error", "No books found.")
                 return jsonify({"error": "No books found."}), 404
 
             books = scraped
+            if getPlatformConfigSnapshot()["platform"] == "audiobookshelf":
+                with booksCacheLock:
+                    activeKey = booksCache.get("activeKey")
+                if activeKey in books:
+                    currentIsbn = activeKey
 
             if (not currentIsbn) or (currentIsbn not in books):
                 currentBook = next(iter(books.values()))
@@ -886,7 +958,6 @@ def presence_stop():
     try:
         should_run_event.clear()
         stopSleepEvent.set()
-        stopSleepEvent.clear()
         updateStatus("Active", "Presence stop requested")
         logInfo("Presence stop requested.", uiStatus=None)
         return jsonify({"message": "Presence loop stopped."})
@@ -921,6 +992,7 @@ def run_presence():
         try:
             presence.connect()
         except Exception as e:
+            should_run_event.clear()
             logError(f"Discord connect failed: {e}", uiStatus="Error", exc=e)
             return
 
@@ -935,8 +1007,18 @@ def run_presence():
                 goodreadsId = cfg["goodreads_id"]
                 storygraphUsername = cfg["storygraph_username"]
 
-                with booksLock:
-                    book = currentBook
+                if platform == "audiobookshelf":
+                    freshBooks = getBooksCached(ttlSeconds=10)
+                    with booksCacheLock:
+                        activeKey = booksCache.get("activeKey")
+                    with booksLock:
+                        if freshBooks is not None:
+                            books = freshBooks
+                        book = (freshBooks or {}).get(activeKey) if activeKey else None
+                        currentBook = book
+                else:
+                    with booksLock:
+                        book = currentBook
 
                 if book:
                     startTs = None
@@ -946,12 +1028,23 @@ def run_presence():
                     except Exception:
                         startTs = None
 
-                    largeImage = "book"
+                    # Discord's media proxy can display a publicly available
+                    # HTTPS cover image directly. Private/authenticated covers
+                    # are replaced with an Open Library match or the 'book' asset.
+                    try:
+                        largeImage = coverResolver.resolve(book)
+                    except Exception as coverError:
+                        logWarning(f"Book cover lookup failed: {type(coverError).__name__}")
+                        largeImage = DEFAULT_COVER_ASSET
                     largeText = "Reading"
                     buttonUrl = None
                     buttonLabel = None
 
-                    if platform == "storygraph":
+                    if platform == "audiobookshelf":
+                        largeText = "Listening on Audiobookshelf"
+                        buttonUrl = book.get("bookUrl")
+                        buttonLabel = "View Audiobook"
+                    elif platform == "storygraph":
                         largeText = "Reading via StoryGraph"
                         buttonUrl = book.get("bookUrl") or f"https://app.thestorygraph.com/currently-reading/{storygraphUsername}"
                         buttonLabel = "View on StoryGraph"
@@ -960,20 +1053,40 @@ def run_presence():
                         buttonUrl = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
                         buttonLabel = "View Goodreads"
 
+                    activity = {
+                        "details": book.get("title") or "Unknown Title",
+                        "state": f"by {book.get('author') or 'Unknown Author'}",
+                        "large_image": largeImage,
+                        "large_text": largeText,
+                        "start": startTs,
+                        "buttons": [{"label": buttonLabel, "url": buttonUrl}] if buttonUrl and buttonLabel else None,
+                    }
+
                     try:
-                        presence.update(
-                            details=book.get("title") or "Unknown Title",
-                            state=f"by {book.get('author') or 'Unknown Author'}",
-                            large_image=largeImage,
-                            large_text=largeText,
-                            start=startTs,
-                            buttons=[{"label": buttonLabel, "url": buttonUrl}] if buttonUrl and buttonLabel else None,
-                        )
+                        presence.update(**activity)
                         updateStatus("Active", f"Presence updated: {book.get('title') or 'Unknown Title'}")
                     except Exception as updateErr:
-                        logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
+                        if largeImage != DEFAULT_COVER_ASSET:
+                            # Invalid/unsupported remote asset must not prevent
+                            # text-only activity from updating successfully.
+                            try:
+                                activity["large_image"] = DEFAULT_COVER_ASSET
+                                presence.update(**activity)
+                                logWarning(
+                                    f"External cover image was rejected; using '{DEFAULT_COVER_ASSET}' instead."
+                                )
+                                updateStatus("Active", f"Presence updated: {book.get('title') or 'Unknown Title'}")
+                            except Exception as fallbackError:
+                                logError(f"Presence update failed: {fallbackError}", uiStatus="Error", exc=fallbackError)
+                        else:
+                            logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
                 else:
-                    updateStatus("Info", "No current book selected")
+                    if platform == "audiobookshelf":
+                        try:
+                            presence.clear()
+                        except Exception:
+                            pass
+                    updateStatus("Info", "No active book")
 
                 try:
                     interval = int(cfg.get("update_interval", 60)) or 60
@@ -982,6 +1095,7 @@ def run_presence():
 
                 waitSeconds = max(5, min(600, interval))
                 stopSleepEvent.wait(timeout=waitSeconds)
+                stopSleepEvent.clear()
 
         finally:
             is_running_event.clear()
@@ -1001,7 +1115,7 @@ def run_presence():
 def run():
     try:
         logInfo("Flask server starting.", uiStatus="Info")
-        app.run(host="localhost", port=5000)
+        app.run(host="127.0.0.1", port=5000, use_reloader=False)
     except Exception as e:
         logError(f"Flask runtime error: {e}", uiStatus="Error", exc=e)
 
