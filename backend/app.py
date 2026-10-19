@@ -16,6 +16,7 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -356,6 +357,8 @@ applyConfigToRuntimeState()
 
 @app.errorhandler(Exception)
 def handle_unhandled_error(e: Exception):
+    if isinstance(e, HTTPException):
+        return jsonify({"error": e.description}), e.code
     return safeJsonifyError(e, code=500, where="GlobalHandler")
 
 
@@ -881,6 +884,7 @@ def presence_start():
         global presenceThread, currentBook, books, currentIsbn
 
         should_run_event.set()
+        stopSleepEvent.clear()
 
         scraped = getBooksCached()
         with booksLock:
@@ -925,7 +929,6 @@ def presence_stop():
     try:
         should_run_event.clear()
         stopSleepEvent.set()
-        stopSleepEvent.clear()
         updateStatus("Active", "Presence stop requested")
         logInfo("Presence stop requested.", uiStatus=None)
         return jsonify({"message": "Presence loop stopped."})
@@ -960,6 +963,7 @@ def run_presence():
         try:
             presence.connect()
         except Exception as e:
+            should_run_event.clear()
             logError(f"Discord connect failed: {e}", uiStatus="Error", exc=e)
             return
 
@@ -1040,6 +1044,7 @@ def run_presence():
 
                 waitSeconds = max(5, min(600, interval))
                 stopSleepEvent.wait(timeout=waitSeconds)
+                stopSleepEvent.clear()
 
         finally:
             is_running_event.clear()
