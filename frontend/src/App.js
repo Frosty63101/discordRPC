@@ -251,6 +251,7 @@ function App() {
       <select className="input" value={platform} onChange={(e) => handlePlatformChange(e.target.value)}>
         <option value="goodreads">Goodreads</option>
         <option value="storygraph">StoryGraph</option>
+        <option value="audiobookshelf">Audiobookshelf</option>
       </select>
 
       <label>Discord App ID:</label>
@@ -310,13 +311,45 @@ function App() {
         </>
       )}
 
+      {platform === 'audiobookshelf' && (
+        <>
+          <label>Audiobookshelf Server URL:</label>
+          <input
+            className="input"
+            placeholder="https://your-server.example.com"
+            value={config.audiobookshelf_url || ''}
+            onChange={(e) => setConfig({ ...config, audiobookshelf_url: e.target.value })}
+          />
+          <label>Audiobookshelf API Key:</label>
+          <input
+            type="password"
+            autoComplete="off"
+            className="input"
+            placeholder="Leave blank to keep the saved API key"
+            value={config.audiobookshelf_api_key || ''}
+            onChange={(e) => setConfig({ ...config, audiobookshelf_api_key: e.target.value })}
+          />
+          <label>Audiobookshelf User UUID:</label>
+          <input
+            className="input"
+            placeholder="User ID from Audiobookshelf"
+            value={config.audiobookshelf_user_id || ''}
+            onChange={(e) => setConfig({ ...config, audiobookshelf_user_id: e.target.value })}
+          />
+          <small style={{ display: 'block', marginTop: '6px', color: '#666' }}>
+            Save your settings to connect. Only currently active listening sessions appear on Discord.
+            The API key is saved locally, not displayed again.
+          </small>
+        </>
+      )}
+
       <label>Update Interval (seconds):</label>
       <input
         type="number"
         className="input"
         value={config.update_interval ?? 60}
         onChange={(e) => {
-          const val = Math.max(Math.min(parseInt(e.target.value, 10), 600), 60);
+          const val = Math.max(Math.min(parseInt(e.target.value, 10), 600), 5);
           setConfig({ ...config, update_interval: Number.isNaN(val) ? 60 : val });
         }}
         onBlur={() => {
@@ -336,6 +369,7 @@ function App() {
           updateBook(next);
         }}
       >
+        <option value="">Select a book</option>
         {Object.entries(books).map(([isbn, book]) => (
           <option key={isbn} value={isbn}>
             {book.title} by {book.author}
