@@ -333,7 +333,11 @@ function createMainWindow() {
             if (isQuitting) return; // actual quit path
             if (localConfig.minimizeToTray) {
                 if (!tray) setupTray();
-                if (!tray) return;
+                if (!tray) {
+                    e.preventDefault();
+                    hardExit();
+                    return;
+                }
                 e.preventDefault();
                 mainWindow.hide();
                 if (process.platform === 'darwin') { try { app.dock?.hide(); } catch {} }
@@ -432,29 +436,32 @@ function gracefulShutdown() {
 }
 
 async function escalateKillChain() {
-    tryKillBackend('SIGTERM');
+    const processToStop = flaskProcess;
+    if (!processToStop) return;
+
+    try {
+        if (processToStop.exitCode === null) processToStop.kill('SIGTERM');
+    } catch (error) {
+        console.error('Could not terminate backend:', error);
+    }
     await delay(BACKEND_TERM_GRACE_MS);
 
-    if (flaskProcess && !flaskProcess.killed) {
+    if (processToStop.exitCode === null) {
         try {
             if (process.platform === 'win32') {
-                execFile('taskkill', ['/PID', String(flaskProcess.pid), '/T', '/F'], () => {});
+                await new Promise((resolve) => {
+                    execFile('taskkill', ['/PID', String(processToStop.pid), '/T', '/F'],
+                        () => resolve());
+                });
             } else {
-                tryKillBackend('SIGKILL');
+                processToStop.kill('SIGKILL');
             }
-        } catch (e) { console.error('Force kill error:', e); }
+        } catch (error) {
+            console.error('Could not force-stop backend:', error);
+        }
     }
     await delay(BACKEND_KILL_GRACE_MS);
-}
-
-function tryKillBackend(signal) {
-    try {
-        if (flaskProcess && !flaskProcess.killed) flaskProcess.kill(signal || 'SIGTERM');
-    } catch (e) {
-        console.error('Error killing backend:', e);
-    } finally {
-        flaskProcess = null;
-    }
+    if (flaskProcess === processToStop) flaskProcess = null;
 }
 
 function destroyUi() {
@@ -475,7 +482,11 @@ function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 app.on('window-all-closed', () => {
     if (!isQuitting && !localConfig.minimizeToTray) hardExit();
 });
-app.on('before-quit', () => { isQuitting = true; });
+app.on('before-quit', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    hardExit();
+});
 app.on('activate', () => {
     if (mainWindow) mainWindow.show();
     else if (backendReady) createMainWindow();
