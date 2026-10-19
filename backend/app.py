@@ -23,7 +23,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
+# Electron loads a file:// origin ('null'); allow that and local React development
+# only. Broad "*" would let arbitrary websites read the local log/config API.
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ["null", "http://localhost:3000", "http://127.0.0.1:3000"]}},
+    supports_credentials=False,
+)
 
 presenceThread = None
 
