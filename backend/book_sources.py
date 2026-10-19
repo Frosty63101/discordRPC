@@ -50,7 +50,7 @@ def findContainer(anchor):
 
 
 def stableKey(prefix, href, title, author):
-    match = re.search(r"/(?:books|book/show)/(?:[^/?#]*/)?([0-9a-f-]{6,}|\\d+)(?:[/?#]|$)", href or "", re.I)
+    match = re.search(r"/(?:books|book/show)/(?:[^/?#]*/)?([0-9a-f-]{6,}|\d+)(?:[/?#]|$)", href or "", re.I)
     if match:
         return f"{prefix}-{match.group(1).lower()}"
     normalized = re.sub(r"[^a-z0-9]+", "-", f"{title}-{author}".lower()).strip("-")
@@ -142,7 +142,7 @@ def parseStoryGraphBooks(htmlText, pageUrl):
         date = None
         for tag in container.select("p, time, span"):
             value = cleanText(tag.get_text(" ", strip=True))
-            match = re.search(r"\\bStarted\\s+(.+)", value, re.I)
+            match = re.search(r"\bStarted\s+(.+)", value, re.I)
             if match and len(match.group(1)) < 70:
                 date = match.group(1)
                 break
@@ -225,8 +225,7 @@ def fetchAudiobookshelfBooks(httpSession, serverUrl, apiKey, userId, freshnessSe
         authorizedUser = apiGet("/api/authorize").get("user") or {}
         if str(authorizedUser.get("id")) != str(userId):
             raise ValueError("This API key cannot access the requested Audiobookshelf user UUID")
-        response = apiGet("/api/me/listening-sessions", {"itemsPerPage": 10})
-        sessions = response.get("sessions", [])
+        raise ValueError("Audiobookshelf key cannot read listening sessions for this user")
 
     now = time.time()
     byId = {}
