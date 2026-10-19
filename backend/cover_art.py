@@ -29,7 +29,7 @@ HTTPS_UPGRADE_HOSTS = (
 
 def safePublicImageUrl(candidate):
     """Only return a remote HTTPS URL free of secret-looking parameters."""
-    if not isinstance(candidate, str) or not candidate.strip() or len(candidate) > 1800:
+    if not isinstance(candidate, str) or not candidate.strip() or len(candidate) > 300:
         return None
     url = candidate.strip()
     try:
