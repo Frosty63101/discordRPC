@@ -23,6 +23,19 @@ A Discord Rich Presence application that displays your current reading activity 
 
 ### From Source
 
+For manually packaged releases (not just the CI workflow), generate the
+native open-book app icons first:
+
+```bash
+python -m pip install Pillow
+python scripts/generate_icons.py
+```
+
+This creates the `.ico`, `.icns`, and `.png` from code. The SVG artwork is
+available without this step when running in development.
+
+
+
 #### Prerequisites (All Platforms)
 
 - **Node.js 18+** (with npm)
@@ -76,7 +89,7 @@ A Discord Rich Presence application that displays your current reading activity 
 7. Package the Electron app:
     ```cmd
     npm install --save-dev electron @electron/packager
-    npx @electron/packager . DiscordRPC --platform=win32 --arch=x64 --out=dist --overwrite --prune=true
+    npx @electron/packager . DiscordRPC --platform=win32 --arch=x64 --icon=frontend/public/book-icon.ico --out=dist --overwrite --prune=true
     ```
 
 8. Your app is now in `dist/DiscordRPC-win32-x64/`
@@ -151,7 +164,7 @@ A Discord Rich Presence application that displays your current reading activity 
 8. Package the Electron app:
     ```bash
     npm install --save-dev electron @electron/packager
-    npx electron-packager . DiscordRPC --platform=darwin --arch=x64 --out=dist --overwrite --prune=true
+    npx electron-packager . DiscordRPC --platform=darwin --arch=x64 --icon=frontend/public/book-icon.icns --out=dist --overwrite --prune=true
     ```
 
 9. Your app is now at `dist/DiscordRPC-darwin-x64/DiscordRPC.app`
@@ -226,7 +239,7 @@ A Discord Rich Presence application that displays your current reading activity 
 8. Package the Electron app:
     ```bash
     npm install --save-dev electron @electron/packager
-    npx electron-packager . DiscordRPC --platform=darwin --arch=arm64 --out=dist --overwrite --prune=true
+    npx electron-packager . DiscordRPC --platform=darwin --arch=arm64 --icon=frontend/public/book-icon.icns --out=dist --overwrite --prune=true
     ```
 
 9. Your app is now at `dist/DiscordRPC-darwin-arm64/DiscordRPC.app`
@@ -298,7 +311,7 @@ A Discord Rich Presence application that displays your current reading activity 
 8. Package the Electron app:
     ```bash
     npm install --save-dev electron @electron/packager
-    npx electron-packager . DiscordRPC --platform=linux --arch=x64 --out=dist --overwrite --prune=true
+    npx electron-packager . DiscordRPC --platform=linux --arch=x64 --icon=frontend/public/book-icon.png --out=dist --overwrite --prune=true
     ```
 
 9. Your app is now in `dist/DiscordRPC-linux-x64/`
