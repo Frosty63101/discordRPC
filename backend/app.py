@@ -665,7 +665,7 @@ def getRecentLogs():
             return jsonify({"lines": [], "limit": limit}), 200
         with open(logPath, "r", encoding="utf-8", errors="replace") as logFile:
             lines = list(deque(logFile, maxlen=limit))
-        return jsonify({"lines": [line.rstrip("\\r\\n") for line in lines], "limit": limit}), 200
+        return jsonify({"lines": [line.rstrip() for line in lines], "limit": limit}), 200
     except Exception as error:
         return safeJsonifyError(error, 500, "getRecentLogs")
 
