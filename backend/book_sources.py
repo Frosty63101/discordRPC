@@ -302,7 +302,8 @@ def fetchAudiobookshelfBooks(httpSession, serverUrl, apiKey, userId, freshnessSe
         coverUrl = urljoin(f"{serverUrl}/", coverPath.lstrip("/"))
         if key not in byId or isOnline:
             byId[key] = {
-                "isbn": key, "title": cleanText(title) or "Unknown Title",
+                "isbn": key, "coverIsbn": metadata.get("isbn"),
+                "title": cleanText(title) or "Unknown Title",
                 "author": cleanText(author) or "Unknown Author",
                 "coverArt": coverUrl, "startDate": None,
                 "platform": "audiobookshelf", "bookUrl": f"{serverUrl}/item/{libraryId}",
