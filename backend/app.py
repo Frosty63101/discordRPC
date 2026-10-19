@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import os
 import re
@@ -176,6 +177,56 @@ def findBundledPlaywrightZip(meipassDir: str) -> str | None:
     return None
 
 
+def ensurePlaywrightBrowserCache(archivePath: str, cacheRoot: str) -> str:
+    """Unpack only when the archive changes or Chromium is missing.
+
+    The archive digest replaces the old permanent '.extracted-ok' timestamp,
+    which could incorrectly reuse a browser built for another Playwright version.
+    """
+    browserDir = os.path.join(cacheRoot, "browsers")
+    markerPath = os.path.join(cacheRoot, ".extracted-ok")
+    os.makedirs(cacheRoot, exist_ok=True)
+
+    digest = hashlib.sha256()
+    with open(archivePath, "rb") as archiveFile:
+        for chunk in iter(lambda: archiveFile.read(1024 * 1024), b""):
+            digest.update(chunk)
+    archiveHash = digest.hexdigest()
+
+    def browserPresent() -> bool:
+        if not os.path.isdir(browserDir):
+            return False
+        for rootDir, _, fileNames in os.walk(browserDir):
+            if "chrome-headless-shell.exe" in fileNames or "chrome-headless-shell" in fileNames:
+                return True
+        return False
+
+    previousHash = ""
+    if os.path.isfile(markerPath):
+        with open(markerPath, "r", encoding="utf-8") as markerFile:
+            previousHash = markerFile.read().strip()
+    if previousHash == archiveHash and browserPresent():
+        return browserDir
+
+    if os.path.isdir(browserDir):
+        shutil.rmtree(browserDir)
+    os.makedirs(browserDir, exist_ok=True)
+    with zipfile.ZipFile(archivePath, "r") as zipRef:
+        realRoot = os.path.realpath(browserDir)
+        for member in zipRef.infolist():
+            realMember = os.path.realpath(os.path.join(browserDir, member.filename))
+            if realMember != realRoot and not realMember.startswith(realRoot + os.sep):
+                raise ValueError("Unsafe path in bundled Chromium archive")
+        zipRef.extractall(browserDir)
+
+    if not browserPresent():
+        raise RuntimeError("Bundled Playwright archive has no Chromium headless-shell executable")
+
+    with open(markerPath, "w", encoding="utf-8") as markerFile:
+        markerFile.write(archiveHash)
+    return browserDir
+
+
 def setPlaywrightBrowserPathForPyinstaller() -> None:
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
@@ -187,27 +238,11 @@ def setPlaywrightBrowserPathForPyinstaller() -> None:
         return
 
     playwrightCacheDir = os.path.join(cacheDir, "discordrpc-playwright")
-    extractedBrowsersDir = os.path.join(playwrightCacheDir, "browsers")
-    markerPath = os.path.join(playwrightCacheDir, ".extracted-ok")
-    cachedZipPath = os.path.join(playwrightCacheDir, "playwright-browsers.zip")
-
-    os.makedirs(playwrightCacheDir, exist_ok=True)
-
-    if not os.path.exists(markerPath):
-        if os.path.exists(extractedBrowsersDir):
-            shutil.rmtree(extractedBrowsersDir, ignore_errors=True)
-        os.makedirs(extractedBrowsersDir, exist_ok=True)
-
-        shutil.copy2(bundledZipInMeipass, cachedZipPath)
-        with zipfile.ZipFile(cachedZipPath, "r") as zipRef:
-            zipRef.extractall(extractedBrowsersDir)
-
-        with open(markerPath, "w", encoding="utf-8") as f:
-            f.write(str(int(time.time())))
-
-        logInfo("Extracted Playwright browsers to cache.", uiStatus="Info")
-
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = extractedBrowsersDir
+    try:
+        browserDir = ensurePlaywrightBrowserCache(bundledZipInMeipass, playwrightCacheDir)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browserDir
+    except Exception as error:
+        logError(f"Bundled Chromium cache repair failed: {type(error).__name__}: {error}", uiStatus="Error")
 
 
 setPlaywrightBrowserPathForPyinstaller()
@@ -573,7 +608,13 @@ def get_books() -> dict | None:
                 booksCache["activeKey"] = activeKey
             return found
         except Exception as error:
-            logError(f"Audiobookshelf fetch failed: {type(error).__name__}", uiStatus="Error")
+            if isinstance(error, ValueError):
+                logError(f"Audiobookshelf setup error: {error}", uiStatus="Error")
+            elif isinstance(error, requests.HTTPError):
+                status = error.response.status_code if error.response is not None else "unknown"
+                logError(f"Audiobookshelf API returned HTTP {status}. Check server permissions and user ID.", uiStatus="Error")
+            else:
+                logError(f"Audiobookshelf connection failed: {type(error).__name__}", uiStatus="Error")
             return None
 
     logError(f"Unknown platform: {platform}", uiStatus="Error")
