@@ -10,6 +10,7 @@ import threading
 import time
 import zipfile
 from book_sources import parseGoodreadsBooks, parseStoryGraphBooks, fetchAudiobookshelfBooks
+from cover_art import BookCoverResolver, DEFAULT_COVER_ASSET
 from logging.handlers import RotatingFileHandler
 
 import requests
@@ -161,6 +162,7 @@ def buildHttpSession() -> requests.Session:
 
 
 httpSession = buildHttpSession()
+coverResolver = BookCoverResolver()
 
 
 def findBundledPlaywrightZip(meipassDir: str) -> str | None:
@@ -999,7 +1001,14 @@ def run_presence():
                     except Exception:
                         startTs = None
 
-                    largeImage = "book"
+                    # Discord's media proxy can display a publicly available
+                    # HTTPS cover image directly. Private/authenticated covers
+                    # are replaced with an Open Library match or the 'book' asset.
+                    try:
+                        largeImage = coverResolver.resolve(book)
+                    except Exception as coverError:
+                        logWarning(f"Book cover lookup failed: {type(coverError).__name__}")
+                        largeImage = DEFAULT_COVER_ASSET
                     largeText = "Reading"
                     buttonUrl = None
                     buttonLabel = None
@@ -1017,18 +1026,33 @@ def run_presence():
                         buttonUrl = f"https://www.goodreads.com/review/list/{goodreadsId}?shelf=currently-reading"
                         buttonLabel = "View Goodreads"
 
+                    activity = {
+                        "details": book.get("title") or "Unknown Title",
+                        "state": f"by {book.get('author') or 'Unknown Author'}",
+                        "large_image": largeImage,
+                        "large_text": largeText,
+                        "start": startTs,
+                        "buttons": [{"label": buttonLabel, "url": buttonUrl}] if buttonUrl and buttonLabel else None,
+                    }
+
                     try:
-                        presence.update(
-                            details=book.get("title") or "Unknown Title",
-                            state=f"by {book.get('author') or 'Unknown Author'}",
-                            large_image=largeImage,
-                            large_text=largeText,
-                            start=startTs,
-                            buttons=[{"label": buttonLabel, "url": buttonUrl}] if buttonUrl and buttonLabel else None,
-                        )
+                        presence.update(**activity)
                         updateStatus("Active", f"Presence updated: {book.get('title') or 'Unknown Title'}")
                     except Exception as updateErr:
-                        logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
+                        if largeImage != DEFAULT_COVER_ASSET:
+                            # Invalid/unsupported remote asset must not prevent
+                            # text-only activity from updating successfully.
+                            try:
+                                activity["large_image"] = DEFAULT_COVER_ASSET
+                                presence.update(**activity)
+                                logWarning(
+                                    f"External cover image was rejected; using '{DEFAULT_COVER_ASSET}' instead."
+                                )
+                                updateStatus("Active", f"Presence updated: {book.get('title') or 'Unknown Title'}")
+                            except Exception as fallbackError:
+                                logError(f"Presence update failed: {fallbackError}", uiStatus="Error", exc=fallbackError)
+                        else:
+                            logError(f"Presence update failed: {updateErr}", uiStatus="Error", exc=updateErr)
                 else:
                     if platform == "audiobookshelf":
                         try:
