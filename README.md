@@ -303,6 +303,23 @@ A Discord Rich Presence application that displays your current reading activity 
 
 9. Your app is now in `dist/DiscordRPC-linux-x64/`
 
+## Book cover images in Discord
+
+The Discord activity uses the book's cover as its **large image** when a valid,
+public HTTPS image is available. It tries the provider's cover first, then Open
+Library by ISBN or a title/author match. Cover results (including misses) are
+cached for six hours to avoid excess requests. Discord gets only the public image
+URL, never your Audiobookshelf API key, private cookies, or local server address.
+
+A private Audiobookshelf cover endpoint usually cannot be loaded by Discord,
+even if the desktop app can see it. Open Library can supply the equivalent public
+cover for those books. If no suitable image is available, the activity falls back
+to the `book` image asset previously used by the app. Upload an image named
+`book` in the Discord Developer Portal to ensure this fallback has artwork.
+
+External image URLs must be accessible without authentication and may still be
+rejected or not rendered by Discord if the server blocks Discord's media proxy.
+
 ## Configuration
 
 ### Goodreads ID
