@@ -80,6 +80,12 @@ jobs:
         working-directory: frontend
         run: npm install
 
+      - name: Test React dashboard
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npm test -- --watch=false
+
       - name: Build React frontend
         working-directory: frontend
         run: call npm run build --verbose
@@ -205,6 +211,12 @@ jobs:
         working-directory: frontend
         run: npm install
 
+      - name: Test React dashboard
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npm test -- --watch=false
+
       - name: Build React frontend
         working-directory: frontend
         run: npm run build
@@ -327,6 +339,12 @@ jobs:
         working-directory: frontend
         run: npm install
 
+      - name: Test React dashboard
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npm test -- --watch=false
+
       - name: Build React frontend
         working-directory: frontend
         run: npm run build
@@ -433,6 +451,12 @@ jobs:
       - name: Install Node dependencies
         working-directory: frontend
         run: npm install
+
+      - name: Test React dashboard
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npm test -- --watch=false
 
       - name: Build React frontend
         working-directory: frontend
