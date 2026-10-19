@@ -62,7 +62,7 @@ afterEach(() => {
 test('shows the responsive dashboard and selected book', async () => {
   render(<App />);
   expect(await screen.findByRole('heading', { name: 'Reading Presence' })).toBeInTheDocument();
-  expect(screen.getByRole('heading', { name: 'A Test Book' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'A Test Book' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Reading source' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Discord & app settings' })).toBeInTheDocument();
 });
