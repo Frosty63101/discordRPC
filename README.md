@@ -330,6 +330,13 @@ Save the config before starting presence. The app uses `/api/users/online` for c
 
 **Security:** the key is stored in your local application configuration; do not commit the key to this repository or share diagnostic logs containing credentials. Use HTTPS when accessing a remote server. The UI hides the saved key after you save it.
 
+### Troubleshooting
+
+- **Discord error 4000 — Client ID is Invalid:** copy your actual Discord Application ID from the Discord Developer Portal. The default example ID may no longer represent a working application. Do not paste a bot token.
+- **StoryGraph / Playwright executable missing:** quit the app and remove the directory `%LOCALAPPDATA%\\GoodreadsRPC\\discordrpc-playwright` on Windows (or `discordrpc-playwright` under the platform cache directory on macOS/Linux), then relaunch. New builds automatically re-extract when the archive hash changes or the browser is missing.
+- **Audiobookshelf setup error:** enter an http(s) server URL, a valid API key, and the exact user ID. Audiobookshelf API keys are scoped to the selected user. An admin key can inspect online sessions; a non-admin key can read its own sessions and may detect recently open playback sessions through `/api/session/:id`. Playback in offline players cannot be detected until they sync with the server.
+- Logs: `gr_rpc_log.txt` beside `app_config.json`, under `%APPDATA%\\GoodreadsRPC` (Windows), `~/Library/Application Support/GoodreadsRPC` (macOS), or `~/.config/GoodreadsRPC` (Linux).
+
 ### Notes on website scraping
 
 Goodreads and StoryGraph do not offer a supported modern public API for this specific use case. The app tries book links, semantic selectors and JSON-LD structured data so a cosmetic CSS change is less likely to break parsing. StoryGraph uses a headless browser for JavaScript-rendered pages and may require a login cookie. Anti-bot controls, private profiles or major website changes can still prevent automated access; no scraper can be guaranteed permanently UI-change-proof.
