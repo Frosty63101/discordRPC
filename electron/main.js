@@ -81,22 +81,23 @@ function isRosettaInstalled() {
 // ---------- resolve backend ----------
 function getFlaskBinary() {
     const base = path.join(__dirname, '..', 'build');
+    const buildBase = fs.existsSync(base) ? base : path.join(process.resourcesPath, 'app', 'build');
     if (process.platform === 'win32') {
-        return { binaryPath: path.join(base, 'app', 'app', 'app.exe'), launcher: null, args: [] };
+        return { binaryPath: path.join(buildBase, 'app', 'app', 'app.exe'), launcher: null, args: [] };
     }
     if (process.platform === 'darwin') {
-        const armPath = path.join(base, 'app-mac-arm64', 'app_mac_bin_arm64');
-        const x64Path = path.join(base, 'app-mac-x86_64', 'app_mac_bin_x86_64');
+        const armPath = path.join(buildBase, 'app-mac-arm64', 'app_mac_bin_arm64');
+        const x64Path = path.join(buildBase, 'app-mac-x86_64', 'app_mac_bin_x86_64');
         const arch = process.arch;
         if (arch === 'arm64') {
             if (fs.existsSync(armPath)) return { binaryPath: armPath, launcher: null, args: [] };
             if (fs.existsSync(x64Path) && isRosettaInstalled()) return { binaryPath: x64Path, launcher: 'arch', args: ['-x86_64', x64Path] };
         }
-        if (fs.existsSync(x64Path)) return { binaryPath: x64Path, launcher: null, args: [] };
+        if (fs.existsSync(x64Path) && arch === 'x64') return { binaryPath: x64Path, launcher: null, args: [] };
         throw new Error(`No valid macOS binary found for architecture: ${arch}`);
     }
     if (process.platform === 'linux') {
-        return { binaryPath: path.join(base, 'app-linux', 'app_linux_bin'), launcher: null, args: [] };
+        return { binaryPath: path.join(buildBase, 'app-linux', 'app_linux_bin'), launcher: null, args: [] };
     }
     throw new Error(`Unsupported platform: ${process.platform}`);
 }
@@ -105,7 +106,8 @@ function getFlaskBinary() {
 function loadLocalConfig() {
     try {
         const home = process.env[process.platform === 'win32' ? 'USERPROFILE' : 'HOME'];
-        const configPath = path.join(home, '.config', 'app_config.json');
+        const configRoot = process.platform === 'win32' ? (process.env.APPDATA || home) : process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support') : (process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
+        const configPath = path.join(configRoot, 'GoodreadsRPC', 'app_config.json');
         if (fs.existsSync(configPath)) return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     } catch (e) {
         console.error('Failed to parse local config:', e);
@@ -264,7 +266,7 @@ function launchBackendOnce(launcher, binaryPath, args) {
             const cmd = launcher || binaryPath;
             const finalArgs = launcher ? args : [];
             flaskProcess = spawn(cmd, finalArgs, {
-                shell: process.platform === 'win32',
+                shell: false,
                 stdio: 'ignore',
                 windowsHide: true,
                 detached: false
@@ -282,7 +284,7 @@ function launchBackendOnce(launcher, binaryPath, args) {
 function waitForFlask(retries = 75) {
     return new Promise((resolve, reject) => {
         const tryOnce = () => {
-            http.get('http://localhost:5000/api/hello', (res) => {
+            http.get('http://127.0.0.1:5000/api/hello', (res) => {
                 if (res.statusCode === 200) return resolve();
                 if (--retries <= 0) return reject(new Error(`Flask responded with ${res.statusCode}`));
                 setTimeout(tryOnce, 250);
@@ -395,7 +397,7 @@ function gracefulShutdown() {
         };
 
         const req = http.request({
-            hostname: 'localhost', port: 5000, path: '/shutdown',
+            hostname: '127.0.0.1', port: 5000, path: '/shutdown',
             method: 'POST', timeout: SHUTDOWN_REQUEST_TIMEOUT_MS
         }, () => {
             setTimeout(() => {
